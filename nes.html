@@ -6927,7 +6927,7 @@ function powerOn(timingMode) {
   dbgSlBreakpoint = -1; dbgBreakOnNmi = false; dbgBreakOnIrq = false;
   _dbgStepOverAddr = -1; _dbgStepFramePending = false;
   dbgWatches.length = 0;
-  dbgApuScopeMute.fill(false);
+  dbgApuScopeMute.fill(false); _dbgAnyMuted = false;
   _dbgApuMuteBuilt = false;
   dbgCpuHook = null; dbgTimelineHook = null; dbgHooksActive = false;
 
@@ -12278,7 +12278,7 @@ function createMapper515(desc) {
     cpuWrite(addr, val) {
       if ((addr & 0xE00F) === 0x8000) { bank = val & 0x7F; useInternal = !!(val & 0x80); return; }
       if ((addr & 0xE003) === 0x6000) { opllAddr = val & 0x3F; return; } // YM2413 index
-      if ((addr & 0xE003) === 0x6001) { opllDbgWrite(opllAddr, val); opll.writeReg(opllAddr, val); return; } // YM2413 data
+      if ((addr & 0xE003) === 0x6001) { if (debugOpenPanels.has('opll')) opllDbgWrite(opllAddr, val); opll.writeReg(opllAddr, val); return; } // YM2413 data
       // SPI chip select (active low)
       if ((addr & 0xE003) === 0xC002) {
         spiCS = (val >> 7) & 1;
@@ -31360,10 +31360,10 @@ function blitFramebuffer() {
   ctx.putImageData(imageData, 0, 0);
 
   // ── Patch crash detection ──
-  // After a patch is applied, sample the CPU program counter each frame.
-  // A healthy game moves PC constantly; a crashed ROM stays stuck at one address.
+  // Two parallel checks: CPU halt (PC stuck) and soft crash (uniform screen).
   if (_patchCrashWatch > 0) {
     _patchCrashWatch--;
+    // Check 1: CPU halt — PC hasn't moved for 60 consecutive frames
     const pc = hw.cpu.pc[0];
     if (pc === _patchCrashLastPC) {
       _patchCrashStuck++;
@@ -31371,18 +31371,34 @@ function blitFramebuffer() {
       _patchCrashStuck = 0;
       _patchCrashLastPC = pc;
     }
-    // If PC hasn't moved for 60 consecutive frames (~1 second), CPU is halted
     if (_patchCrashStuck >= 60) {
-      _patchCrashWatch = 0;
-      _patchCrashStuck = 0;
-      _patchCrashLastPC = -1;
+      _patchCrashWatch = 0; _patchCrashStuck = 0; _patchCrashLastPC = -1;
       removePatch(true);
       toast('Patch reverted - ROM crashed (bad or incompatible patch)', 'error', 4000);
-    } else if (_patchCrashWatch === 0) {
-      // Watchdog expired without detecting a crash — game is running fine
-      _patchCrashStuck = 0;
-      _patchCrashLastPC = -1;
+      return;
     }
+    // Check 2: uniform framebuffer — skip first 60 frames (boot grace period)
+    // A true crash screen is literally one solid color across ALL 61440 pixels.
+    // Any text, sprite, or non-uniform pixel means the game is rendering.
+    // Short-circuits on the first mismatch — instant bail for running games.
+    if (_patchCrashWatch < 60) {
+      const first = framebuffer[0];
+      let uniform = true;
+      for (let i = 1; i < framebuffer.length; i++) {
+        if (framebuffer[i] !== first) { uniform = false; break; }
+      }
+      if (!uniform) {
+        // Game is rendering — cancel watchdog entirely
+        _patchCrashWatch = 0; _patchCrashStuck = 0; _patchCrashLastPC = -1;
+      } else if (_patchCrashWatch === 0) {
+        // Still uniform after 2 full seconds — soft crash
+        _patchCrashStuck = 0; _patchCrashLastPC = -1;
+        removePatch(true);
+        toast('Patch reverted - ROM crashed (bad or incompatible patch)', 'error', 4000);
+      }
+    }
+    // Watchdog expired without either trigger — clean up
+    if (_patchCrashWatch === 0) { _patchCrashStuck = 0; _patchCrashLastPC = -1; }
   }
 }
 
@@ -31441,11 +31457,13 @@ for (let n = 0; n < 203; n++) TND_MIX[n] = n === 0 ? 0 : 163.67 / (24329.0 / n +
 // ── Expansion audio hook (placeholder for VRC6/VRC7/FDS/N163/5B/MMC5) ──
 let _dbgApuExpChCount = 0; // expansion channel count — set by mute row builder, used by expansionAudioSample
 let expansionAudioSample = () => {
-  // If all expansion channels are muted, return 0 (gray bar in scope)
-  const expN = _dbgApuExpChCount || 1;
-  let allMuted = true;
-  for (let i = 0; i < expN; i++) { if (!dbgApuScopeMute[5 + i]) { allMuted = false; break; } }
-  if (allMuted && expN > 0 && dbgApuScopeMute[5] !== undefined) return 0;
+  // Fast path: no channels muted — skip the per-cycle mute loop
+  if (_dbgAnyMuted) {
+    const expN = _dbgApuExpChCount || 1;
+    let allMuted = true;
+    for (let i = 0; i < expN; i++) { if (!dbgApuScopeMute[5 + i]) { allMuted = false; break; } }
+    if (allMuted && expN > 0 && dbgApuScopeMute[5] !== undefined) return 0;
+  }
   let out = hw.mapper.audioSample() * hw.mapper.audioMixWeight;
   return out * (config.expVolume / 100);
 };
@@ -32167,12 +32185,21 @@ function apuStep() {
 // ── Mixer — sample the current APU output (0.0–1.0) ──
 
 function apuMix() {
-  const m = dbgApuScopeMute; // debug mute array — pre-DAC, like pulling a channel pin to ground
-  const p1  = m[0] ? 0 : (apuPulseOutput(hw.apu.p1, true)  * config.volP1 / 100) | 0;
-  const p2  = m[1] ? 0 : (apuPulseOutput(hw.apu.p2, false) * config.volP2 / 100) | 0;
-  const tri = m[2] ? 0 : (apuTriangleOutput()               * config.volTri / 100) | 0;
-  const noi = m[3] ? 0 : (apuNoiseOutput()                  * config.volNoi / 100) | 0;
-  const dmc = m[4] ? 0 : (hw.apu.dmc.outputLevel            * config.volDmc / 100) | 0;
+  const p1  = (apuPulseOutput(hw.apu.p1, true)  * config.volP1 / 100) | 0;
+  const p2  = (apuPulseOutput(hw.apu.p2, false) * config.volP2 / 100) | 0;
+  const tri = (apuTriangleOutput()               * config.volTri / 100) | 0;
+  const noi = (apuNoiseOutput()                  * config.volNoi / 100) | 0;
+  const dmc = (hw.apu.dmc.outputLevel            * config.volDmc / 100) | 0;
+  if (_dbgAnyMuted) {
+    // Slow path: at least one channel is muted — check each
+    const m = dbgApuScopeMute;
+    const mp1 = m[0] ? 0 : p1, mp2 = m[1] ? 0 : p2;
+    const mtri = m[2] ? 0 : tri, mnoi = m[3] ? 0 : noi, mdmc = m[4] ? 0 : dmc;
+    const exp = expansionAudioSample();
+    const expDbg = exp + ((emu.epsmEnabled && epsm) ? epsm.sample() * epsm.audioMixWeight : 0);
+    if (dbgApuMixHook) dbgApuMixHook(mp1, mp2, mtri, mnoi, mdmc, expDbg);
+    return PULSE_MIX[mp1 + mp2] + TND_MIX[3 * mtri + 2 * mnoi + mdmc];
+  }
   const exp = expansionAudioSample();
   const expDbg = exp + ((emu.epsmEnabled && epsm) ? epsm.sample() * epsm.audioMixWeight : 0);
   if (dbgApuMixHook) dbgApuMixHook(p1, p2, tri, noi, dmc, expDbg);
@@ -39628,6 +39655,9 @@ function debugCleanup() {
   // EPSM log
   epsmDbgLog.length = 0;
   epsmDbgLogPaused = true; // Reset to capture-off default
+  // OPLL log
+  opllDbgLog.length = 0;
+  opllDbgLogPaused = true; // Reset to capture-off default
   // APU oscilloscope — free buffers but preserve channel mute state
   dbgApuMixHook = null; dbgApuScopeBuf = null; dbgApuScopePos = 0; dbgApuScopeDiv = 0;
   // Note: dbgApuScopeMute and epsm muteMask intentionally NOT reset here —
@@ -41968,6 +41998,7 @@ let _dbgApuCtx = null;
 // Per-channel scope mute — indices 0-4 = APU base, 5+ = expansion channels
 // Pre-DAC: silences actual audio output, not just scope display
 const dbgApuScopeMute = new Array(14).fill(false); // 5 APU + up to 9 expansion
+let _dbgAnyMuted = false; // fast-path: true when any channel is muted (avoids per-cycle array checks)
 let _dbgApuMuteBuilt = false;
 let _dbgApuMuteLastMapper = -1; // rebuild when mapper changes
 
@@ -42066,6 +42097,7 @@ function _dbgMuteBtn(color, name, idx, onExtra) {
   btn.title = `Solo/mute ${name}`;
   btn.addEventListener('click', () => {
     dbgApuScopeMute[idx] = !dbgApuScopeMute[idx];
+    _dbgAnyMuted = dbgApuScopeMute.includes(true);
     btn.style.opacity = dbgApuScopeMute[idx] ? '0.35' : '1';
     btn.style.textDecoration = dbgApuScopeMute[idx] ? 'line-through' : '';
     onExtra();
@@ -42440,10 +42472,11 @@ function updatePatchButton() {
   }
 }
 
-// Patch crash detection — after a patch is applied, monitor the CPU program
-// counter once per frame.  If PC is stuck at the same address for ~60 frames
-// the CPU has halted (infinite loop, BRK into garbage vectors, etc.) and the
-// patched ROM crashed.  Auto-reverts and notifies.
+// Patch crash detection — two parallel checks after a patch is applied:
+//   1. CPU halt: PC stuck at the same address for 60 consecutive frames (~1s)
+//   2. Soft crash: framebuffer is a single uniform color for 120 frames (~2s)
+// Either condition triggers an automatic revert.  The framebuffer check skips
+// the first 60 frames to let legitimate boot screens pass.
 let _patchCrashWatch = 0;
 let _patchCrashLastPC = -1;
 let _patchCrashStuck = 0;
@@ -42467,7 +42500,7 @@ function applyPatchFile(file) {
       }
       closeSettings();
       emu._patchReload = true;
-      _patchCrashWatch = 90; // Monitor next ~90 frames (~1.5s) for crash
+      _patchCrashWatch = 120; // Monitor next ~120 frames (~2s) for crash
       loadROM(patched, $('rom-name')?.textContent || 'ROM', emu.isFDS);
       toast('Patch applied — ' + file.name, 'info', 3000);
     } catch (e) {
@@ -46520,7 +46553,7 @@ function loadNSF(data, name, preHeader) {
   dbgSlBreakpoint = -1; dbgBreakOnNmi = false; dbgBreakOnIrq = false;
   _dbgStepOverAddr = -1; _dbgStepFramePending = false;
   dbgWatches.length = 0;
-  dbgApuScopeMute.fill(false);
+  dbgApuScopeMute.fill(false); _dbgAnyMuted = false;
   _dbgApuMuteBuilt = false;
   // Zero all hot-path hooks — debug panel is disabled during NSF
   dbgCpuHook = null; dbgTimelineHook = null; dbgHooksActive = false;
