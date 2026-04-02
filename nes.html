@@ -31360,25 +31360,28 @@ function blitFramebuffer() {
   ctx.putImageData(imageData, 0, 0);
 
   // ── Patch crash detection ──
-  // After a patch is applied, watch for a uniform-color framebuffer (gray screen)
-  // which signals the patched ROM crashed.  Skip the first 30 frames to let the
-  // game boot, then check.  If still uniform at frame 90, auto-revert.
+  // After a patch is applied, sample the CPU program counter each frame.
+  // A healthy game moves PC constantly; a crashed ROM stays stuck at one address.
   if (_patchCrashWatch > 0) {
     _patchCrashWatch--;
-    if (_patchCrashWatch < 60) { // start checking after ~30 frames
-      const first = framebuffer[0];
-      let uniform = true;
-      // Sample every 256th pixel across the screen — fast and sufficient
-      for (let i = 256; i < framebuffer.length; i += 256) {
-        if (framebuffer[i] !== first) { uniform = false; break; }
-      }
-      if (!uniform) {
-        _patchCrashWatch = 0; // game booted — cancel watchdog
-      } else if (_patchCrashWatch === 0) {
-        // Still uniform after full window — crashed; remove silently then show one toast
-        removePatch(true);
-        toast('Patch reverted — ROM crashed (bad or incompatible patch)', 'error', 4000);
-      }
+    const pc = hw.cpu.pc[0];
+    if (pc === _patchCrashLastPC) {
+      _patchCrashStuck++;
+    } else {
+      _patchCrashStuck = 0;
+      _patchCrashLastPC = pc;
+    }
+    // If PC hasn't moved for 60 consecutive frames (~1 second), CPU is halted
+    if (_patchCrashStuck >= 60) {
+      _patchCrashWatch = 0;
+      _patchCrashStuck = 0;
+      _patchCrashLastPC = -1;
+      removePatch(true);
+      toast('Patch reverted - ROM crashed (bad or incompatible patch)', 'error', 4000);
+    } else if (_patchCrashWatch === 0) {
+      // Watchdog expired without detecting a crash — game is running fine
+      _patchCrashStuck = 0;
+      _patchCrashLastPC = -1;
     }
   }
 }
@@ -36067,6 +36070,8 @@ function loadROM(data, name, isFDS) {
     emu.patchName = null;
     emu.romSourceHash = null;
     _patchCrashWatch = 0; // cancel any active watchdog on fresh ROM load
+    _patchCrashLastPC = -1;
+    _patchCrashStuck = 0;
   }
   emu._patchReload = false;
   // Stop NSF playback if active (user loaded a ROM while NSF was playing)
@@ -42435,10 +42440,13 @@ function updatePatchButton() {
   }
 }
 
-// Patch crash detection — counts down frames after a patch is applied.
-// If the framebuffer is a single uniform color for the entire window, the
-// patched ROM likely crashed (gray screen).  Auto-reverts and notifies.
+// Patch crash detection — after a patch is applied, monitor the CPU program
+// counter once per frame.  If PC is stuck at the same address for ~60 frames
+// the CPU has halted (infinite loop, BRK into garbage vectors, etc.) and the
+// patched ROM crashed.  Auto-reverts and notifies.
 let _patchCrashWatch = 0;
+let _patchCrashLastPC = -1;
+let _patchCrashStuck = 0;
 
 function applyPatchFile(file) {
   const reader = new FileReader();
