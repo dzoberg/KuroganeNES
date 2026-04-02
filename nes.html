@@ -1261,6 +1261,13 @@ html, body {
 }
 @media (hover: hover) { .tas-meta-btn:hover { opacity:0.85; } }
 .tas-meta-btn.on { background:var(--surface2); color:#fff; border-color:rgba(255,255,255,0.9); box-shadow:0 0 0 1px rgba(255,255,255,0.35); opacity:1; }
+/* VS System TAS: recolour existing Select→1P/2P START (blue/green), Start→COIN (gold) */
+.tas-meta-btn.vs-start-p1 { border-color:rgba(90,159,212,0.6); color:#5a9fd4; opacity:0.9; }
+.tas-meta-btn.vs-start-p2 { border-color:rgba(78,196,106,0.6); color:#4ec46a; opacity:0.9; }
+.tas-meta-btn.vs-start-p1.on { background:rgba(37,99,168,0.4); border-color:#5a9fd4; color:#fff; }
+.tas-meta-btn.vs-start-p2.on { background:rgba(34,135,74,0.4);  border-color:#4ec46a; color:#fff; }
+.tas-meta-btn.vs-coin { border-color:rgba(255,204,0,0.5); color:var(--gold); opacity:0.9; }
+.tas-meta-btn.vs-coin.on { background:rgba(255,204,0,0.25); border-color:var(--gold); color:#fff; }
 .tas-ab { display:flex; align-items:center; gap:10px; flex-shrink:0; }
 .tas-ab-btn {
   width:40px; height:40px; border-radius:50%;
@@ -29991,6 +29998,19 @@ function vsInsertCoin(player) {
   const p = player & 1;
   vs.coinState[p] = 1;
   vs.coinTimer[p] = 4; // ~67ms at 60Hz
+  // TAS: queue the coin bit for the next committed frame.
+  // Not during playback — tasExecFrame drives coins directly from the movie there.
+  if (tas.active && tas.movie && !tas.playing) {
+    tas.pendingCoin |= (p === 0 ? 0x01 : 0x02);
+    if (emu.paused) {
+      // Frame-advance mode: also write into pendingInput so the bit is
+      // committed immediately on the next ▷ press, and light the button.
+      const key = p === 0 ? 'p1' : 'p2';
+      tas.pendingInput[key] |= 0x08;
+      const btn = _tasBtnEls ? _tasBtnEls['start'] : document.querySelector('.tas-meta-btn[data-tas="start"]');
+      if (btn) btn.classList.add('on');
+    }
+  }
 }
 
 // Nametable mirroring — now handled by hw.mapper.ntRead/ntWrite
@@ -34235,6 +34255,9 @@ function getControllerState(player) {
         state.select = state.select || readBinding(gp, config.vsStartGp[pkey], 0.5);
       }
     }
+    // No physical Start button on VS arcade — suppress start bit to prevent
+    // accidental 0x08 from touch overlap logging as COIN in TAS recordings.
+    state.start = false;
   }
 
   // Block simultaneous opposite directions — mirrors real hardware D-pad mechanics.
@@ -42671,6 +42694,7 @@ const tas = {
   playbackFinished: false, // true only when Play reached the last frame
   isLoaded: false,         // true when movie came from a .tas file (not user-created via NEW)
   pendingDisk: 0,          // queued FDS disk op for next frame advance
+  pendingCoin: 0,          // queued VS coin bits for next frame (bit0=P1, bit1=P2)
   _playPrevTs: null,       // previous RAF timestamp (frame delta calculation)
   _playAccum: 0,           // accumulated ms since last frame advance
 };
@@ -42765,6 +42789,7 @@ function tasNew() {
   tas.greenzone = {};
   tas.pendingInput = { p1: 0, p2: 0 };
   tas.pendingDisk = 0;
+  tas.pendingCoin = 0;
   tasClearButtons();
   tasBuildRollHeader();
   if (emu.isFDS) tasBuildFdsButtons();
@@ -42783,8 +42808,16 @@ function tasExecFrame(input, skipBlit) {
     else if (d === 0x02 && hw.mapper.insertDisk) hw.mapper.insertDisk();
     else if ((d & 0x08) && hw.mapper.setSide) hw.mapper.setSide(d & 0x03);
   }
-  // Set frame input for controllerLatch hook
-  tas._frameInput = input;
+  // VS System: start bit (0x08) = coin trigger during TAS playback.
+  // Insert coin directly (hardware path only — no pendingCoin side effects during playback).
+  // Mask 0x08 from _frameInput so the start bit never reaches the shift register.
+  if (vs.active) {
+    if (input.p1 & 0x08) { vs.coinState[0] = 1; vs.coinTimer[0] = 4; }
+    if (input.p2 & 0x08) { vs.coinState[1] = 1; vs.coinTimer[1] = 4; }
+    tas._frameInput = { p1: input.p1 & ~0x08, p2: input.p2 & ~0x08 };
+  } else {
+    tas._frameInput = input;
+  }
   ppuFrameReady = false;
   const maxCycles = hw.cpu.cycles + Math.ceil(t.cpuHz / t.fps * 1.2);
   while (!ppuFrameReady && hw.cpu.cycles < maxCycles) {
@@ -42809,6 +42842,11 @@ function tasFrameAdvance() {
   const f = tas.frame;
   while (tas.movie.inputs.length <= f) tas.movie.inputs.push({ p1: 0, p2: 0 });
   const frameInput = { p1: tas.pendingInput.p1, p2: tas.pendingInput.p2 };
+  if (tas.pendingCoin) {
+    if (tas.pendingCoin & 0x01) frameInput.p1 |= 0x08;
+    if (tas.pendingCoin & 0x02) frameInput.p2 |= 0x08;
+    tas.pendingCoin = 0;
+  }
   if (tas.pendingDisk) { frameInput.disk = tas.pendingDisk; tas.pendingDisk = 0; }
   tas.movie.inputs[f] = frameInput;
   // Execute one frame
@@ -43033,6 +43071,36 @@ function tasApplyPlayerClass() {
   if (!btn) return;
   btn.classList.toggle('p1-active', tas.player === 0);
   btn.classList.toggle('p2-active', tas.player === 1);
+  tasApplyVsStyle();
+}
+
+// VS System TAS: apply/remove colour + label overrides on existing Select/Start meta buttons
+function tasApplyVsStyle() {
+  const selectBtn = document.querySelector('.tas-meta-btn[data-tas="select"]');
+  const startBtn  = document.querySelector('.tas-meta-btn[data-tas="start"]');
+  if (!selectBtn || !startBtn) return;
+  if (vs.active) {
+    // Select → 1P/2P START (blue for P1, green for P2)
+    const startClass = tas.player === 0 ? 'vs-start-p1' : 'vs-start-p2';
+    selectBtn.classList.remove('vs-start-p1', 'vs-start-p2');
+    selectBtn.classList.add(startClass);
+    selectBtn.textContent = tas.player === 0 ? '1P START' : '2P START';
+    // Start → COIN (gold)
+    startBtn.classList.add('vs-coin');
+    startBtn.textContent = 'COIN';
+    // Overlay: relabel select→S (1P/2P START) and start→C (COIN) for both players
+    document.querySelectorAll('[data-ov$="-select"]').forEach(el => { el.textContent = 'S'; });
+    document.querySelectorAll('[data-ov$="-start"]').forEach(el => { el.textContent = 'C'; });
+  } else {
+    // Restore defaults
+    selectBtn.classList.remove('vs-start-p1', 'vs-start-p2');
+    selectBtn.textContent = 'Select';
+    startBtn.classList.remove('vs-coin');
+    startBtn.textContent = 'Start';
+    // Overlay: restore original labels
+    document.querySelectorAll('[data-ov$="-select"]').forEach(el => { el.textContent = 's'; });
+    document.querySelectorAll('[data-ov$="-start"]').forEach(el => { el.textContent = 'S'; });
+  }
 }
 
 // Button visuals
@@ -43249,30 +43317,37 @@ function tasFdsSideClick() {
 function tasBuildRollHeader() {
   const hdr = $('tas-roll-header');
   if (!hdr) return;
+  const colLabels = vs.active ? 'U D L R S C B A' : 'U D L R s S B A';
   let h = '<span class="tas-roll-hdr-frame">#</span>';
   h += '<span class="tas-roll-player">1P</span>';
-  h += '<span class="tas-roll-hdr-p">U D L R s S B A</span>';
+  h += `<span class="tas-roll-hdr-p">${colLabels}</span>`;
   h += '<span class="tas-roll-hdr-sep"></span>';
   h += '<span class="tas-roll-player">2P</span>';
-  h += '<span class="tas-roll-hdr-p">U D L R s S B A</span>';
+  h += `<span class="tas-roll-hdr-p">${colLabels}</span>`;
   if (emu.isFDS) {
     h += '<span class="tas-roll-hdr-sep"></span>';
     h += '<span class="tas-roll-hdr-disk">⏏</span>';
     h += '<span class="tas-roll-hdr-disk">S</span>';
   }
   hdr.innerHTML = h;
+  // Sync button labels and overlay to current game type (VS or standard)
+  tasApplyVsStyle();
 }
 
 // Piano roll rendering
-const TAS_ROLL_LABELS = ['U','D','L','R','s','S','B','A'];
+const TAS_ROLL_LABELS    = ['U','D','L','R','s','S','B','A'];
+const TAS_ROLL_LABELS_VS = ['U','D','L','R','S','C','B','A'];
+// Bit order: U=0x10,D=0x20,L=0x40,R=0x80,select=0x04,start=0x08,B=0x02,A=0x01
+// VS: select(0x04)=1P/2P START→label S, start(0x08)=COIN trigger→label C
 const TAS_ROLL_BITS   = [0x10,0x20,0x40,0x80,0x04,0x08,0x02,0x01];
 
 function tasFormatInputs(val) {
+  const labels = vs.active ? TAS_ROLL_LABELS_VS : TAS_ROLL_LABELS;
   let s = '';
   for (let i = 0; i < 8; i++) {
     if (i > 0) s += ' ';
     if (val & TAS_ROLL_BITS[i]) {
-      s += `<span class="tas-roll-on">${TAS_ROLL_LABELS[i]}</span>`;
+      s += `<span class="tas-roll-on">${labels[i]}</span>`;
     } else {
       s += `<span class="tas-roll-off">·</span>`;
     }
@@ -44667,6 +44742,11 @@ function mainLoop(timestamp) {
       const p2 = controllerPackButtons(1);
       while (tas.movie.inputs.length <= tas.frame) tas.movie.inputs.push({ p1: 0, p2: 0 });
       const frameInput = { p1, p2 };
+      if (tas.pendingCoin) {
+        if (tas.pendingCoin & 0x01) frameInput.p1 |= 0x08;
+        if (tas.pendingCoin & 0x02) frameInput.p2 |= 0x08;
+        tas.pendingCoin = 0;
+      }
       if (tas.pendingDisk) { frameInput.disk = tas.pendingDisk; tas.pendingDisk = 0; }
       tas.movie.inputs[tas.frame] = frameInput;
       tas.frame++;
