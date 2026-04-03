@@ -29815,6 +29815,8 @@ const spriteUnits = new Array(8);        // Sprite render units for current scan
 for (let i = 0; i < 8; i++) spriteUnits[i] = { pattern:0, attr:0, x:0, id:0, xCounter:0, pixelsOut:9 };
 
 const framebuffer = new Uint32Array(256 * 240); // RGBA output
+const rawPalBuffer = new Uint8Array(256 * 240);  // Raw 6-bit palette indices (for deferred greyscale/emphasis)
+let lastUpdatedPixel = -1;                        // Last pixel stamped with greyscale/emphasis
 const imageData = new ImageData(256, 240);
 const imgBuf32 = new Uint32Array(imageData.data.buffer);
 
@@ -29990,6 +29992,38 @@ function ppuUpdateEmphCache() {
   ppuEmphOffset = emph * 64;
   const isRGB = ppuModel >= PPU_MODEL['2C03'] && ppuModel <= PPU_MODEL['2C05'];
   ppuEmphPalette = isRGB ? emphPaletteRGB : emphPalette;
+}
+
+// ── Deferred greyscale/emphasis (2C02 DAC pipeline model) ──
+// On real hardware, greyscale ($2001 bit 0) and emphasis ($2001 bits 5-7)
+// are applied at the DAC output stage, ~2-3 dots downstream of the pixel
+// mux. The deferred model writes raw palette indices and retroactively
+// stamping greyscale/emphasis when $2001 is written (with a cycle-3 offset)
+// or at frame end. This function applies the CURRENT greyscale/emphasis
+// to all raw pixels from lastUpdatedPixel+1 through pixelNumber.
+function flushGreyscaleEmphasis(pixelNumber) {
+  if (lastUpdatedPixel >= pixelNumber) {
+    lastUpdatedPixel = pixelNumber;
+    return;
+  }
+
+  // Current greyscale mask and emphasis offset
+  const greyMask = (hw.ppu.mask & 0x01) ? 0x30 : 0x3F;
+  const isNeutral = greyMask === 0x3F && ppuEmphOffset === 0;
+
+  if (!isNeutral) {
+    for (let i = lastUpdatedPixel + 1; i <= pixelNumber; i++) {
+      const raw = rawPalBuffer[i];
+      const masked = raw & greyMask;
+      framebuffer[i] = ppuEmphPalette[ppuEmphOffset + masked];
+    }
+  } else {
+    // No greyscale, no emphasis — pixels already have correct neutral RGBA
+    // Render-time pixels use ppuEmphPalette[color] which equals ppuEmphPalette[0 + color]
+    // when ppuEmphOffset is 0, so no fixup is needed.
+  }
+
+  lastUpdatedPixel = pixelNumber;
 }
 
 // Vs. System state — arcade cabinet I/O (initialized when a Vs. game is loaded)
@@ -30305,10 +30339,29 @@ function ppuRegWrite(reg, val) {
       nmiUpdate();
       break;
     }
-    case 1:
-      // NESdev: mask register bits (greyscale, clipping, emphasis) take effect near-instantly.
-      // Only the rendering toggle (bits 3-4 controlling fetches/shifts) is delayed ~3 dots.
-      hw.ppu.mask = val;  // Apply mask register immediately
+    case 1: {
+      // ── Deferred greyscale/emphasis: flush pixels rendered so far with OLD mask ──
+      // NESdev formula: pixelNumber = scanline * 256 + _cycle - 3
+      // where _cycle is the last processed cycle (post-increment inside Exec).
+      // In this emulator, hw.ppu.dot is incremented AFTER ppuDot() returns,
+      // so it points to the NEXT dot to process (_cycle + 1). Therefore:
+      //   pixelNumber = scanline * 256 + (dot - 1) - 3 = scanline * 256 + dot - 4
+      const sl = hw.ppu.scanline;
+      const dot = hw.ppu.dot;
+      let pixelNumber;
+      if (sl < 0 || sl >= 240) {
+        pixelNumber = (sl >= 240) ? 61439 : -1;
+      } else if (dot < 4) {
+        pixelNumber = (sl << 8) - 1;
+      } else if (dot <= 259) {
+        pixelNumber = (sl << 8) + dot - 4;
+      } else {
+        pixelNumber = (sl << 8) + 255;
+      }
+      flushGreyscaleEmphasis(pixelNumber);
+
+      // Now apply new mask and update emphasis cache
+      hw.ppu.mask = val;
       ppuUpdateEmphCache();
       // Always recompute the delayed rendering state with a fresh ~4 dot delay.
       // NESdev: toggling rendering delays about 4 dots (NESdev PPU_registers).
@@ -30316,6 +30369,7 @@ function ppuRegWrite(reg, val) {
       ppuRenderTogglePending = (val & 0x18) !== 0 ? 1 : 0;
       ppuRenderToggleDelay = 4;
       break;
+    }
     case 3: hw.ppu.oamAddr = val; break;
     case 4: { // OAMDATA write
       const sl = hw.ppu.scanline;
@@ -30678,6 +30732,17 @@ function processSpriteEvaluation() {
             }
             if ((secondaryOamAddr & 0x03) === 0) {
               sprInRange = false;
+              // Misaligned OAM resync: when evaluation started from a non-aligned
+              // OAMADDR, sprAddrL may be non-zero after copying 4 bytes. Hardware
+              // resyncs sprAddrL to 0 (aligned) so the next entry's Y byte is read
+              // correctly — UNLESS the last byte copied happens to be in range of
+              // the current scanline, in which case the misalignment persists.
+              // (Verified via Visual 2C02 hardware simulation)
+              if (sprAddrL !== 0) {
+                const inRange = scanline >= oamCopyBuf &&
+                  scanline < oamCopyBuf + ((hw.ppu.ctrl & 0x20) ? 16 : 8);
+                if (!inRange) sprAddrL = 0;
+              }
             }
           } else {
             sprAddrH = (sprAddrH + 1) & 0x3F; sprAddrL = 0;
@@ -30969,24 +31034,42 @@ function ppuDot() {
     const bg = bgPixel();
     const spr = spritePixel(dot);
 
-    // Sprite 0 hit detection — NESdev conditions:
-    // Both BG and sprite opaque, not at x=255, both BG and sprites enabled,
-    // and not in left 8 pixels when clipping is active ($2001 bits 1,2)
-    if (spr.sprZero && bg !== 0 && dot !== 256 &&
-        (hw.ppu.mask & 0x18) === 0x18 && !(hw.ppu.status & 0x40)) {
-      // NESdev: "At x=0 to x=7 if the left-side clipping window is enabled
-      // (if bit 2 or bit 1 of PPUMASK is 0)" → no hit
-      if (dot <= 8 && (hw.ppu.mask & 0x06) !== 0x06) {
-        // Left clipping active — suppress hit
-      } else {
-        hw.ppu.status |= 0x40; // Set sprite 0 hit
+    // Sprite 0 hit detection — 2C02 hardware behavior (verified via Visual 2C02):
+    // The hit circuit taps the BG shift register outputs DIRECTLY, before the
+    // BG display-enable gate. It checks the raw 2-bit pattern (not the full
+    // palette index from bgPixel which is gated by PPUMASK bit 3).
+    // NESdev: "the background drawing unit is outputting a non-zero pixel"
+    // refers to the shift register output, not the display-enabled output.
+    // Only PPUMASK bit 3 (BG enabled) is checked — the sprite being opaque
+    // already implies sprites are rendering (the output unit only fires when
+    // sprite tile data was fetched, which requires rendering to be active).
+    if (spr.sprZero && !(hw.ppu.status & 0x40)) {
+      const fineX = hw.ppu.x;
+      const bit = 0x8000 >> fineX;
+      const spriteBgColor = ((bgShiftPL & bit) ? 1 : 0) | ((bgShiftPH & bit) ? 2 : 0);
+      if (spriteBgColor !== 0 && dot !== 256 && (hw.ppu.mask & 0x08)) {
+        // NESdev: "Sprite 0 hit does not trigger in any area where the background
+        // or sprites are hidden via PPUMASK. This includes X=0..7 when the leftmost
+        // 8 pixels are hidden."
+        if (dot <= 8 && (hw.ppu.mask & 0x06) !== 0x06) {
+          // Left clipping active — suppress hit
+        } else {
+          hw.ppu.status |= 0x40; // Set sprite 0 hit
+        }
       }
     }
 
     // Compose pixel with priority — direct palCache access (no function call)
     let color;
     if (bg === 0 && spr.pixel === 0) {
-      color = palCache[0]; // Universal background
+      // NESdev backdrop override: during forced blank (rendering disabled), if the
+      // current VRAM address points into palette RAM ($3F00-$3FFF), the PPU draws
+      // the color at that address instead of the normal backdrop color at $3F00.
+      if (!(hw.ppu.mask & 0x18) && hw.ppu.v >= 0x3F00) {
+        color = palCache[hw.ppu.v & 0x1F];
+      } else {
+        color = palCache[0]; // Universal background
+      }
     } else if (bg === 0) {
       color = palCache[spr.pixel];
     } else if (spr.pixel === 0) {
@@ -30997,17 +31080,20 @@ function ppuDot() {
       color = palCache[spr.pixel]; // Sprite in front
     }
 
-    // Apply greyscale
-    if (hw.ppu.mask & 0x01) color &= 0x30;
-
-    framebuffer[sl * 256 + (dot - 1)] = ppuEmphPalette[ppuEmphOffset + (color & 0x3F)];
+    // Store raw 6-bit palette index — greyscale and emphasis are applied
+    // retroactively by flushGreyscaleEmphasis(), matching the 2C02 hardware
+    // pipeline where the DAC applies these effects ~2-3 dots downstream.
+    const fbIdx = sl * 256 + (dot - 1);
+    rawPalBuffer[fbIdx] = color & 0x3F;
+    framebuffer[fbIdx] = ppuEmphPalette[color & 0x3F];
 
     // PAL/Dendy black border — 2C07/UA6538 force $0E (black) at picture edges:
     // 2px left (columns 0–1), 2px right (columns 254–255), 1px top (scanline 0)
     if (ppuModel.blackBorder) {
       const px = dot - 1;
       if (px < 2 || px >= 254 || sl === 0) {
-        framebuffer[sl * 256 + px] = ppuEmphPalette[ppuEmphOffset + 0x0E];
+        rawPalBuffer[fbIdx] = 0x0E;
+        framebuffer[fbIdx] = ppuEmphPalette[0x0E];
       }
     }
 
@@ -31084,6 +31170,13 @@ function ppuDot() {
   // These reads drive the external PPU address bus — essential for MMC5's
   // BG/sprite bank detection flip-flop and MMC3's A12 scanline counter.
   if ((visibleLine || preRender) && dot >= 257 && dot <= 320) {
+    // NESdev PPU_registers: "OAMADDR is set to 0 during each of ticks 257-320
+    // (the sprite tile loading interval) of the pre-render and visible scanlines."
+    // Reset fires at the top of each tick so that CPU writes to $2003 arriving
+    // mid-dot (via ppuCatchUpStart/busWrite/ppuCatchUpEnd) are overwritten by
+    // the very next dot's reset, matching the hardware zeroing behavior.
+    if (rendering) hw.ppu.oamAddr = 0;
+
     if (dot === 257) {
       sprZeroActive = sprZeroOnLine;
       spriteLoadIdx = 0;
@@ -31128,6 +31221,7 @@ function ppuDot() {
   if (preRender && dot === 0) {
     hw.ppu.status &= ~0x60; // Clear sprite 0 hit (bit 6) + overflow (bit 5)
     sprOverflowPending = false; // Clear any deferred overflow from previous frame
+    lastUpdatedPixel = -1;  // Reset deferred greyscale/emphasis tracking for new frame
   }
   if (preRender && dot === 1) {
     hw.ppu.status &= ~0x80; // Clear VBL flag (bit 7)
@@ -31136,6 +31230,9 @@ function ppuDot() {
 
   // ── VBlank set (scanline 241, dot 1) ──
   if (sl === region.vblankStart && dot === 1) {
+    // Flush deferred greyscale/emphasis for all remaining visible pixels
+    flushGreyscaleEmphasis(256 * 240 - 1);
+
     // NESdev: race condition — if $2002 was read when hw.ppu.dot === 1
     // (before this ppuDot runs), the VBL flag is never set this frame
     if (!hw.ppu.suppressVblSet) {
@@ -31143,11 +31240,6 @@ function ppuDot() {
       nmiUpdate();            // Edge detector may trigger NMI
     }
     hw.ppu.suppressVblSet = false; // Reset for next frame
-  }
-
-  // ── OAMADDR reset during ticks 257-320 ──
-  if (fetchLine && rendering && dot >= 257 && dot <= 320) {
-    hw.ppu.oamAddr = 0;
   }
 
   // ── PAL OAM refresh (scanlines 265–310) ──
