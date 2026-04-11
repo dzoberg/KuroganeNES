@@ -4,6 +4,28 @@ A cycle-accurate NES / Famicom Disk System emulator that runs entirely in the br
 
 ---
 
+## v1.0.1
+
+> If upgrading from v1.0, reset settings to defaults (Settings > Actions > Reset Settings to Default) to fix the accuracy bug and joystick handling.
+
+### Input
+- Turbo input unification: eliminated the entire separate turbo rebind system (`turboRebind`, `gpTurboRebind`, `gpTurboPollId`, `_commitTurboKeyboard`, `_commitGpTurbo`, and all 4 separate turbo event listeners) and routed turbo through the standard input rebind system. Turbo cells now use the same `km-key`/`gp-btn-key` classes with `data-turbo`/`data-gpt` attributes, and `_commitPlayerKey`/`_commitGpBinding` handle turbo branches via those attributes.
+- `cancelAllRebinds()` universal cancel helper: single function that clears all 5 rebind states and their polls, called at the top of every click handler plus `closeSettings`, fixing incomplete cross-cancel between rebind types.
+
+### Mapper Fixes
+- PRG ROM mirroring fix for 32KB bank window mappers: added `% prgSize` or `% hw.prgRom.length` wrapping to `cpuRead` in 9 mappers so ROMs with PRG smaller than 32KB correctly mirror to fill the window instead of reading out of bounds. Affected mappers: 7 (AxROM), 10 (MMC4/FxROM), 11 (Color Dreams), 34 (BNROM, two variants), 66 (GxROM), 77 (Napoleon Senki), 107 (Magicseries), 111 (Cheapocabra/GTROM).
+
+### Hardware Decay
+All decay behaviors are modeled as analog read-site filters verified against NESdev hardware documentation. Source data is never destructively modified by the decay system. Each component's charge drain is applied at the point of observation, matching how real capacitive and DRAM decay works on the RP2C02/RP2A03.
+
+- **PPU I/O bus latch decay** (`_io_db`): per-bit randomized thresholds (3 to 30ms per NESdev docs for Visual 2C02), cold/warm transition after ~10s, warm reset uses warm range. Optimized `ppuBusApply` by removing redundant `ppuBusDecay` call.
+- **OAM DRAM row-level decay**: 32 rows tracked with per-row refresh timestamps. Progressive per-bit analog decay via `oamDecayRead()` filter at sprite evaluation only. Per-byte fragility seeds (Fisher-Yates shuffled) model per-cell physical variation. Per-row thresholds (1.6 to 3.0ms), rendering OFF>ON transition refreshes all timestamps to prevent false decay during rapid rendering toggles. `hw.oam[]` is never modified by the decay system. CPU reads via $2004 see raw OAM. Save state v2 format with v1 backwards compatibility.
+- **BG shift register / latch decay**: ~2 frame threshold with inversion-compensated output per NESdev PPU_rendering docs. Decayed pixel value correctly produces palette index $0D (pattern %01 from inverted low bitplane, attribute %11 from inverted attribute latches). Shift registers are never modified. Timestamp refreshed every 8 dots during active BG fetches.
+- **PPU VRAM bus open bus**: documented `addr & 0xFF` return for unmapped CHR reads due to multiplexed AD0-AD7 on RP2C02 pins 31-38. Mapper 185 correctly returns 0xFF for pull-up resistor equipped CNROM variants. All existing mappers already handle this correctly.
+- **CPU data bus capacitive decay**: ~2 frame threshold at the $4000-$401B write-only register open bus fallthrough. Timestamp refreshed on every device-driven read and write. $4015 (APU status) correctly bypasses the refresh since it is internal to the 2A03 and does not drive the external data bus.
+
+---
+
 ## Quick Start
 
 Open `nes.html` in any modern browser. Drag and drop a ROM onto the screen, or click anywhere to open the file picker.

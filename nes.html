@@ -2422,7 +2422,7 @@ html, body {
 <div class="modal-overlay" id="settings-modal">
   <div class="modal">
     <div class="modal-header">
-      <h2>Settings <span class="modal-version">v1.0</span></h2>
+      <h2>Settings <span class="modal-version">v1.0.1</span></h2>
       <button class="modal-close" id="settings-close">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
@@ -5101,8 +5101,8 @@ function setRegion(mode) {
   masterClock = (region.startClock + region.endClock);
   ppuMasterClock = 0;
 
-  // PPU I/O bus decay threshold — 3 frames in the current region's dot count
-  PPU_DECAY_DOTS = 341 * region.totalScanlines * 3;
+  // PPU I/O bus decay — regenerate per-bit thresholds for current region
+  _generateDecayThresholds(_ppuDecayWarm);
 
   // Status bar update
   const el = typeof $ === 'function' ? $('status-region') : null;
@@ -6727,8 +6727,12 @@ const hw = {
     readBuffer: 0,               // PPUDATA read buffer
     ioLatch: 0,                  // PPU I/O bus latch (separate from CPU open bus)
     ioDecayDot: new Float64Array(8), // Per-bit decay timestamps (dotsRun when each bit was last refreshed)
-                                 // NESdev: PPU bus is dynamic latch; bits decay to 0 after ~600ms
-                                 // Per-bit tracking with 30-frame decay threshold
+                                 // NESdev: PPU bus (_io_db) is dynamic latch; bits decay to 0 after 3-30ms
+                                 // Per-bit tracking with randomized per-bit thresholds (ppuDecayThresholds)
+    oamRowRefreshDot: new Float64Array(32), // Per-row DRAM refresh timestamps (dotsRun)
+                                 // NESdev OAM_internals: OAM is 32 rows × 9 bytes of DRAM.
+                                 // "any access refreshes the charge of the entire row"
+                                 // Row = oamAddr >> 3. Decays to 0 after ~1.3-3ms without refresh.
     scanline: 0,                 // Current scanline (0-261 NTSC, 0-311 PAL)
     dot: 0,                      // Current dot/cycle within scanline (0-340)
     frameOdd: false,             // Odd frame flag (NTSC skips dot on odd frames)
@@ -6892,6 +6896,8 @@ function powerOn(timingMode) {
 
   // OAM — NESdev: "unspecified at power on" (DRAM decay)
   randomFill(hw.oam, (Math.random() * 0xFFFFFFFF) >>> 0);
+  hw.ppu.oamRowRefreshDot.fill(0); // All rows "last refreshed at dot 0" = already stale
+  _generateOamDecayOrder(); // Unique per-cell decay characteristics per power cycle
 
   // VRAM/CIRAM — NESdev: "unspecified at power on, unchanged at reset"
   // Same 6116 SRAM chip as CPU RAM; shows similar power-on patterns.
@@ -6946,6 +6952,8 @@ function powerOn(timingMode) {
   hw.ppu.readBuffer = 0;
   hw.ppu.ioLatch = 0;
   hw.ppu.ioDecayDot.fill(0);  // All bits decayed at power-on
+  _ppuDecayWarm = false; _generateDecayThresholds(false); // Cold PPU — full decay range
+  _oamDecayWarm = false; _generateOamDecayThresholds(false); // Cold OAM — full decay range
   hw.ppu.scanline = region.preRenderLine; // Pre-render line (261 NTSC, 311 PAL/Dendy)
   hw.ppu.dot = 0;
   hw.ppu.frameOdd = false;
@@ -7035,7 +7043,8 @@ function resetHw() {
 
   // ── All RAM is PRESERVED on warm reset — NESdev: "unchanged after a reset" ──
   // hw.cpuRam  : PRESERVED — SRAM, unchanged at reset (SMB warm-boot canary relies on this)
-  // hw.oam     : PRESERVED — DRAM, technically decaying but reset is sub-second; not modeled
+  // hw.oam     : PRESERVED — DRAM, technically decaying but reset is sub-second
+  //              Row refresh timestamps reset to prevent immediate post-reset decay.
   // hw.ciram   : PRESERVED — SRAM, unchanged at reset
   // hw.palette : PRESERVED — static RAM internal to PPU, unchanged at reset
   // hw.prgRam  : PRESERVED — cartridge SRAM, unchanged at reset (save states, high scores)
@@ -7071,6 +7080,9 @@ function resetHw() {
   hw.ppu.resetCycles = (emu.timingMode === 'pal') ? 33132 : 29658; // NESdev: region-dependent reset guard
   hw.ppu.ioLatch = 0;
   hw.ppu.ioDecayDot.fill(0);
+  _ppuDecayWarm = true; _generateDecayThresholds(true); // Warm reset — PPU already warm
+  hw.ppu.oamRowRefreshDot.fill(hw.ppu.dotsRun); // OAM DRAM: sub-second reset, all rows still charged
+  _oamDecayWarm = true; _generateOamDecayThresholds(true); // Warm OAM thresholds
 
   // Bus
   hw.bus.openBus = 0;
@@ -8195,7 +8207,7 @@ function createAxROM(desc) {
     id: 7, submapper: desc.submapper, get mirrorMode() { return mirrorMode; }, set mirrorMode(v) { mirrorMode = v; },
 
     cpuRead(addr) {
-      if (addr >= 0x8000) return hw.prgRom[(prgBank << 15) + (addr & 0x7FFF)];
+      if (addr >= 0x8000) return hw.prgRom[((prgBank << 15) + (addr & 0x7FFF)) % prgSize];
       return hw.bus.openBus;
     },
     cpuWrite(addr, val) {
@@ -8234,7 +8246,7 @@ function createGxROM(desc) {
     id: 66, submapper: desc.submapper, mirrorMode: mirror,
 
     cpuRead(addr) {
-      if (addr >= 0x8000) return hw.prgRom[(prgBank << 15) + (addr & 0x7FFF)];
+      if (addr >= 0x8000) return hw.prgRom[((prgBank << 15) + (addr & 0x7FFF)) % hw.prgRom.length];
       return hw.bus.openBus;
     },
     cpuWrite(addr, val) {
@@ -8272,7 +8284,7 @@ function createColorDreams(desc) {
     id: 11, submapper: desc.submapper, mirrorMode: mirror,
 
     cpuRead(addr) {
-      if (addr >= 0x8000) return hw.prgRom[(prgBank << 15) + (addr & 0x7FFF)];
+      if (addr >= 0x8000) return hw.prgRom[((prgBank << 15) + (addr & 0x7FFF)) % hw.prgRom.length];
       return hw.bus.openBus;
     },
     cpuWrite(addr, val) {
@@ -8739,7 +8751,7 @@ function createMapper34(desc) {
     return {
       id: 34, submapper: desc.submapper, mirrorMode: mirror,
       cpuRead(addr) {
-        if (addr >= 0x8000) return hw.prgRom[(prgBank << 15) + (addr & 0x7FFF)];
+        if (addr >= 0x8000) return hw.prgRom[((prgBank << 15) + (addr & 0x7FFF)) % hw.prgRom.length];
         if (addr >= 0x6000 && hw.prgRam) return hw.prgRam[(addr - 0x6000) & (hw.prgRam.length - 1)];
         return hw.bus.openBus;
       },
@@ -8770,7 +8782,7 @@ function createMapper34(desc) {
     return {
       id: 34, submapper: desc.submapper, mirrorMode: mirror,
       cpuRead(addr) {
-        if (addr >= 0x8000) return hw.prgRom[(prgBank << 15) + (addr & 0x7FFF)];
+        if (addr >= 0x8000) return hw.prgRom[((prgBank << 15) + (addr & 0x7FFF)) % hw.prgRom.length];
         if (addr >= 0x6000 && hw.prgRam) return hw.prgRam[(addr - 0x6000) & (hw.prgRam.length - 1)];
         return hw.bus.openBus;
       },
@@ -9506,7 +9518,7 @@ function createMapper77(desc) {
   return {
     id: 77, submapper: desc.submapper, mirrorMode: 1, // vertical (FourScreens with 2KB CIRAM)
     cpuRead(addr) {
-      if (addr >= 0x8000) return hw.prgRom[(prgBank << 15) + (addr & 0x7FFF)];
+      if (addr >= 0x8000) return hw.prgRom[((prgBank << 15) + (addr & 0x7FFF)) % hw.prgRom.length];
       return hw.bus.openBus;
     },
     cpuWrite(addr, val) {
@@ -10161,7 +10173,7 @@ function createMapper107(desc) {
 
   return {
     id: 107, submapper: desc.submapper, mirrorMode: mirror,
-    cpuRead(addr) { if (addr >= 0x8000) return hw.prgRom[(prgBank << 15) + (addr & 0x7FFF)]; return hw.bus.openBus; },
+    cpuRead(addr) { if (addr >= 0x8000) return hw.prgRom[((prgBank << 15) + (addr & 0x7FFF)) % hw.prgRom.length]; return hw.bus.openBus; },
     cpuWrite(addr, val) { if (addr >= 0x8000) { prgBank = (val >> 1) % prgBankCount; chrBank = val % chrBankCount; } },
     ppuRead(addr) { return hw.chrRom ? hw.chrRom[(chrBank << 13) + (addr & 0x1FFF)] : (hw.chrRam ? hw.chrRam[addr & 0x1FFF] : 0); },
     ppuWrite(addr, val) { if (hw.chrRam) hw.chrRam[addr & 0x1FFF] = val; },
@@ -10518,7 +10530,7 @@ function createMapper111(desc) {
   return {
     id: 111, submapper: desc.submapper, mirrorMode: 4,
     debugMemory: [{ name: 'GTROM NT-RAM (4KB)', data: ntRam }],
-    cpuRead(addr) { if (addr >= 0x8000) return hw.prgRom[(prgBank << 15) + (addr & 0x7FFF)]; return hw.bus.openBus; },
+    cpuRead(addr) { if (addr >= 0x8000) return hw.prgRom[((prgBank << 15) + (addr & 0x7FFF)) % hw.prgRom.length]; return hw.bus.openBus; },
     cpuWrite(addr, val) {
       if ((addr >= 0x5000 && addr < 0x6000) || (addr >= 0x7000 && addr < 0x8000)) {
         prgBank = (val & 0x0F) % prgBankCount;
@@ -23669,7 +23681,7 @@ function createMapper86(desc) {
     id: 86, submapper: desc.submapper,
     mirrorMode: desc.mirror === 'vertical' ? 1 : 0,
     cpuRead(addr) {
-      if (addr >= 0x8000) return hw.prgRom[(prgBank << 15) + (addr & 0x7FFF)];
+      if (addr >= 0x8000) return hw.prgRom[((prgBank << 15) + (addr & 0x7FFF)) % hw.prgRom.length];
       return hw.bus.openBus;
     },
     cpuWrite(addr, val) {
@@ -27600,10 +27612,11 @@ function rwBinaryStateSize() {
 
   // ── PPU: v(2) + t(2) + x(1) + w(1) + ctrl(1) + mask(1) + maskPending(1) + maskDelay(1)
   //         + renderTogglePending(1) + renderToggleDelay(1) + renderingEnabled(1) + status(1)
-  //         + oamAddr(1) + readBuffer(1) + ioLatch(1) + ioDecayDot(8×8=64) + scanline(2) + dot(2)
+  //         + oamAddr(1) + readBuffer(1) + ioLatch(1) + ioDecayDot(8×8=64)
+  //         + oamRowRefreshDot(32×8=256) + scanline(2) + dot(2)
   //         + dotsRun(4) + frameOdd(1) + nmiLine(1) + nmiDelay(1) + suppressVblSet(1)
   //         + prevRenderingEnabled(1) + resetCycles(4)
-  size += 2+2+1+1+1+1+1+1+1+1+1+1+1+1+1+64+2+2+4+1+1+1+1+1+4; // = 98
+  size += 2+2+1+1+1+1+1+1+1+1+1+1+1+1+1+64+256+2+2+4+1+1+1+1+1+4; // = 354
 
   // ── OAM + CIRAM + Palette
   size += 256;              // OAM
@@ -27676,7 +27689,7 @@ function serializeBinary() {
 
   // ── Header — write ──
   w8(0x4B); // 'K' magic
-  w8(0x01); // version 1
+  w8(0x02); // version 2 — adds oamRowRefreshDot (32×F64)
   w16(0);   // reserved
 
   // ── CPU — write ──
@@ -27721,6 +27734,8 @@ function serializeBinary() {
   w8(hw.ppu.ioLatch);
   // ioDecayDot: 8 Float64 values (per-bit decay timestamps)
   for (let i = 0; i < 8; i++) wF64(hw.ppu.ioDecayDot[i]);
+  // oamRowRefreshDot: 32 Float64 values (per-row DRAM refresh timestamps)
+  for (let i = 0; i < 32; i++) wF64(hw.ppu.oamRowRefreshDot[i]);
   w16(hw.ppu.scanline);
   w16(hw.ppu.dot);
   w32(hw.ppu.dotsRun);
@@ -27869,7 +27884,7 @@ function deserializeBinary(buf) {
   const magic = r8();
   const ver = r8();
   r16(); // reserved
-  if (magic !== 0x4B || ver !== 0x01) return false;
+  if (magic !== 0x4B || (ver !== 0x01 && ver !== 0x02)) return false;
 
   // ── CPU — read ──
   rBuf(hw.cpu.regFile);
@@ -27916,6 +27931,10 @@ function deserializeBinary(buf) {
   hw.ppu.readBuffer = r8();
   hw.ppu.ioLatch = r8();
   for (let i = 0; i < 8; i++) hw.ppu.ioDecayDot[i] = rF64();
+  // v2: OAM DRAM row refresh timestamps (32×F64); v1: fill with dotsRun (all refreshed)
+  if (ver >= 0x02) {
+    for (let i = 0; i < 32; i++) hw.ppu.oamRowRefreshDot[i] = rF64();
+  }
   hw.ppu.scanline = r16();
   hw.ppu.dot = r16();
   hw.ppu.dotsRun = r32();
@@ -27925,6 +27944,8 @@ function deserializeBinary(buf) {
   hw.ppu.suppressVblSet = rBool();
   hw.ppu.prevRenderingEnabled = rBool();
   hw.ppu.resetCycles = r32();
+  // v1 fallback: oamRowRefreshDot not in save — mark all rows as freshly refreshed
+  if (ver < 0x02) hw.ppu.oamRowRefreshDot.fill(hw.ppu.dotsRun);
 
   // ── OAM + CIRAM + Palette — read ──
   rBuf(hw.oam);
@@ -28198,6 +28219,7 @@ function serializeState() {
       status: hw.ppu.status,
       oamAddr: hw.ppu.oamAddr, readBuffer: hw.ppu.readBuffer,
       ioLatch: hw.ppu.ioLatch, ioDecayDot: Array.from(hw.ppu.ioDecayDot),
+      oamRowRefreshDot: Array.from(hw.ppu.oamRowRefreshDot),
       scanline: hw.ppu.scanline,
       dot: hw.ppu.dot, frameOdd: hw.ppu.frameOdd, dotsRun: hw.ppu.dotsRun,
       nmiLine: hw.ppu.nmiLine, nmiDelay: hw.ppu.nmiDelay, suppressVblSet: hw.ppu.suppressVblSet,
@@ -28274,6 +28296,8 @@ function deserializeState(s) {
   hw.ppu.readBuffer = s.ppu.readBuffer; hw.ppu.ioLatch = s.ppu.ioLatch;
   if (s.ppu.ioDecayDot) hw.ppu.ioDecayDot.set(s.ppu.ioDecayDot);
   else hw.ppu.ioDecayDot.fill(0);
+  if (s.ppu.oamRowRefreshDot) hw.ppu.oamRowRefreshDot.set(s.ppu.oamRowRefreshDot);
+  else hw.ppu.oamRowRefreshDot.fill(s.ppu.dotsRun || 0);
   hw.ppu.scanline = s.ppu.scanline; hw.ppu.dot = s.ppu.dot;
   hw.ppu.dotsRun = s.ppu.dotsRun || 0;
   hw.ppu.frameOdd = s.ppu.frameOdd;
@@ -28876,6 +28900,15 @@ function controllerRead(port) {
   return (hw.bus.openBus & 0xE0) | micBit | tapeBit | bit;
 }
 
+// ── CPU Data Bus Capacitive Decay (NESdev: Open_bus_behavior) ──
+// "A data bus behaves as a dynamic latch. Once a low or high voltage is
+//  placed on each line of the bus, the capacitance of the long traces that
+//  make up the data bus allows it to 'float' in place to be read again."
+// Documented ~2 frame decay. Practically unobservable — the CPU drives the
+// bus every cycle. Modeled for hardware completeness only.
+let cpuBusDecayDot = 0;                  // dotsRun when hw.bus.openBus was last driven
+const _CPU_BUS_DECAY_DOTS = 178684;      // ~2 frames (341 × 262 × 2)
+
 // ── Bus Read ──
 function busRead(addr) {
   if (_nsfBusActive) return nsfBusRead(addr);
@@ -28905,11 +28938,17 @@ function busRead(addr) {
     apuCatchUp();
     hw.bus.openBus = epsm.read(addr & 3);
   } else if (addr < 0x4020) {
-    // $4000-$4014, $4018-$401B: write-only / test regs → open bus
+    // $4000-$4014, $4018-$401B: write-only / test regs → open bus (bus NOT driven)
+    // CPU bus decay: check if bus value has decayed since last driven
+    if ((hw.ppu.dotsRun - cpuBusDecayDot) > _CPU_BUS_DECAY_DOTS) {
+      hw.bus.openBus = 0;
+    }
+    return hw.bus.openBus; // Return without refreshing timestamp — bus was not driven
   } else {
     // $4020-$FFFF: Cartridge space — routed through mapper
     hw.bus.openBus = hw.mapper.cpuRead(addr);
   }
+  cpuBusDecayDot = hw.ppu.dotsRun; // Bus was driven by a device — refresh decay timestamp
   return hw.bus.openBus;
 }
 
@@ -28919,6 +28958,7 @@ function busWrite(addr, val) {
   addr &= 0xFFFF;
   val &= 0xFF;
   hw.bus.openBus = val; // CPU drives data bus on all writes (NESdev: data pins reflect written value)
+  cpuBusDecayDot = hw.ppu.dotsRun; // CPU bus decay: bus driven on every write
 
   if (addr < 0x2000) {
     hw.cpuRam[addr & 0x7FF] = val;
@@ -30075,6 +30115,14 @@ function vsInsertCoin(player) {
 // Mappers (MMC3) watch bit 12 (A12) transitions on this bus.
 function ppuRead(addr) {
   addr &= 0x3FFF;
+  // NESDev Open_bus_behavior: PPU VRAM bus open bus returns (addr & 0xFF)
+  // due to multiplexed AD0-AD7 pins (pins 31-38 of RP2C02). When no memory
+  // responds, the data bus retains the low byte of the address that was just
+  // driven onto the shared address/data lines. If a future mapper unmaps CHR,
+  // its ppuRead should return (addr & 0xFF), not 0x00.
+  // Mapper 185 returns 0xFF when CHR is disabled — correct for CNROM variants
+  // with pull-up resistors on the CHR data bus (NESDev CNROM §Copy protection).
+  //
   // NESdev: "palette RAM is entirely internal to the PPU" — palette lookups
   // during rendering do NOT drive the external PPU address bus. Only notify
   // a12Watch for addresses the external bus actually sees (<$3F00).
@@ -30147,17 +30195,123 @@ function nmiUpdate() {
 // NESdev wiki: "At least one bit decays after 3ms to 30ms, faster when PPU warm."
 // Hardware testing (lidnariq): 4ms–21ms across units/temperatures.
 // Hardware measurement: 3 frames (~50ms) — conservative upper bound that passes all test ROMs.
-// dotsRun timestamps with 3 frames of dots used as the decay threshold.
-// Region-aware: updated in setRegion() so PAL/Dendy use their own frame length.
-let PPU_DECAY_DOTS = 341 * region.totalScanlines * 3; // ~3 frames in current region
+// Per-bit decay thresholds — NESdev: PPU I/O bus (_io_db in Visual 2C02) is a dynamic
+// latch with per-bit capacitance decay. Documented range: 3ms to 30ms, faster when warm.
+// At NTSC PPU clock (5.3693MHz): 3ms ≈ 16,108 dots, 30ms ≈ 161,079 dots.
+// Each bit gets its own random threshold within this range.
+const _PPU_DECAY_MIN = 16108;   // ~3ms in PPU dots (NTSC base)
+const _PPU_DECAY_MAX = 161079;  // ~30ms in PPU dots (NTSC base)
+const ppuDecayThresholds = new Float64Array(8);
+let _ppuDecayWarm = false;      // after ~10s of running, thresholds shift toward faster end
 
-// Apply decay to ioLatch: zero any bit whose timestamp has expired
+function _generateDecayThresholds(warm) {
+  // NESdev: "At least one bit decays after 3ms to 30ms, faster when PPU is warm"
+  // Warm PPU uses lower 40% of range, cold uses full range
+  const lo = _PPU_DECAY_MIN;
+  const hi = warm ? (_PPU_DECAY_MIN + (_PPU_DECAY_MAX - _PPU_DECAY_MIN) * 0.4) : _PPU_DECAY_MAX;
+  for (let i = 0; i < 8; i++) {
+    ppuDecayThresholds[i] = lo + Math.random() * (hi - lo);
+  }
+}
+_generateDecayThresholds(false);
+
+// ── OAM DRAM Row-Level Decay (NESdev: OAM_internals, PPU_OAM §Dynamic RAM decay) ──
+// OAM is 32 rows × 9 bytes of DRAM. Row = oamAddr >> 3.
+// "any access refreshes the charge of the entire row, not just the targeted byte"
+// PPU OAM: "It will last at least as long as an NTSC vertical blank interval (~1.3ms),
+// but not much longer than this."  At 5.3693 MHz: 1.3ms ≈ 6,980 dots.
+// Normal NTSC gap (last sprite eval SL239 → first sprite eval SL0) ≈ 7,311 dots.
+// Minimum threshold must exceed this to prevent false decay during normal VBlank.
+// "Bits that have decayed also read back as 0 through OAMDATA" — precharge to 0.
+const _OAM_DECAY_MIN = 8580;    // ~1.6ms in PPU dots — safely above NTSC VBlank gap
+const _OAM_DECAY_MAX = 16108;   // ~3.0ms in PPU dots (conservative upper bound)
+const oamDecayThresholds = new Float64Array(32);
+let _oamDecayWarm = false;
+
+function _generateOamDecayThresholds(warm) {
+  const lo = _OAM_DECAY_MIN;
+  const hi = warm ? (_OAM_DECAY_MIN + (_OAM_DECAY_MAX - _OAM_DECAY_MIN) * 0.5) : _OAM_DECAY_MAX;
+  for (let i = 0; i < 32; i++) {
+    oamDecayThresholds[i] = lo + Math.random() * (hi - lo);
+  }
+}
+_generateOamDecayThresholds(false);
+
+// Refresh a single OAM row's DRAM timestamp — called on every OAM access.
+// Row = oamAddr >> 3. Updates the "last refreshed" time for the entire row.
+// NESdev OAM_internals: "any access refreshes the charge of the entire row"
+function oamRefreshRow(oamAddr) {
+  hw.ppu.oamRowRefreshDot[(oamAddr >> 3) & 31] = hw.ppu.dotsRun;
+}
+
+// ── Analog OAM Decay Read (NESdev: OAM_internals §Storage) ──
+// "Decay occurs when enough charge is lost to make both inverters 0."
+// "The resulting bit value is random, but may have somewhat consistent
+//  behavior for a given bit in a given chip."
+// "Bits that have decayed also read back as 0 through OAMDATA" (precharge to 0).
+//
+// Models DRAM charge drain as a read-site filter — hw.oam[] is NEVER modified.
+// Only the PPU's internal rendering pipeline (sprite evaluation) sees decayed data.
+// CPU reads via $2004 see raw hw.oam[] (matching the OAM buffer's precharge behavior).
+// This mirrors the ppuBusDecay pattern: raw storage + observation-time filtering.
+//
+// Per-byte decay order: each OAM byte gets a randomized "fragility" value (0-255).
+// Lower values decay first. Generated once at power-on, consistent per session
+// (models the per-cell physical variation documented in OAM_internals).
+const oamDecayOrder = new Uint8Array(256);
+
+function _generateOamDecayOrder() {
+  // Fisher-Yates shuffle of 0-255 gives each byte a unique decay priority
+  for (let i = 0; i < 256; i++) oamDecayOrder[i] = i;
+  for (let i = 255; i > 0; i--) {
+    const j = (Math.random() * (i + 1)) | 0;
+    const t = oamDecayOrder[i]; oamDecayOrder[i] = oamDecayOrder[j]; oamDecayOrder[j] = t;
+  }
+}
+_generateOamDecayOrder();
+
+// Read a single OAM byte through the analog decay filter.
+// Called ONLY from sprite evaluation — the PPU's internal rendering read path.
+// Returns the byte value with bits progressively zeroed based on elapsed time
+// since the row was last refreshed. Fully decayed = 0x00.
+function oamDecayRead(addr) {
+  addr &= 0xFF;
+  const row = (addr >> 3) & 31;
+  const elapsed = hw.ppu.dotsRun - hw.ppu.oamRowRefreshDot[row];
+  const thresh = oamDecayThresholds[row];
+
+  if (elapsed <= thresh) return hw.oam[addr]; // Fully charged — no decay
+
+  // Progressive decay: model charge drain as linear ramp from threshold to 4× threshold.
+  // At threshold: 0 bits decayed. At 4× threshold: all 8 bits decayed.
+  // Each bit has a per-byte "fragility" that determines its decay order.
+  // Fragility 0-31 = first to go, 224-255 = last to hold.
+  const decayProgress = Math.min((elapsed - thresh) / (thresh * 3), 1.0); // 0.0 → 1.0
+  if (decayProgress >= 1.0) return 0x00; // Fully decayed
+
+  // Use decayProgress to determine how many bits to zero.
+  // The byte's fragility value (0-255) maps to a per-bit threshold:
+  // bit N decays when decayProgress > (bitThreshold / 256).
+  // We use the byte's oamDecayOrder as a seed to generate per-bit variation.
+  const fragility = oamDecayOrder[addr];
+  let val = hw.oam[addr];
+  for (let bit = 0; bit < 8; bit++) {
+    // Each bit gets its own sub-threshold derived from fragility + bit position.
+    // XOR with bit position ensures bits within the same byte decay at different times.
+    const bitFragility = ((fragility + bit * 37) & 0xFF) / 256; // 0.0 → ~1.0
+    if (decayProgress > bitFragility) val &= ~(1 << bit);
+  }
+  return val;
+}
+
+// Apply decay to ioLatch: zero any bit whose per-bit threshold has expired
 function ppuBusDecay() {
   const now = hw.ppu.dotsRun;
   let latch = hw.ppu.ioLatch;
   const stamps = hw.ppu.ioDecayDot;
+  const thresh = ppuDecayThresholds;
   for (let i = 0; i < 8; i++) {
-    if ((now - stamps[i]) > PPU_DECAY_DOTS) latch &= ~(1 << i);
+    if ((now - stamps[i]) > thresh[i]) latch &= ~(1 << i);
   }
   hw.ppu.ioLatch = latch;
 }
@@ -30167,10 +30321,11 @@ function ppuBusDecay() {
 function ppuBusSet(mask, value) {
   const now = hw.ppu.dotsRun;
   const stamps = hw.ppu.ioDecayDot;
+  const thresh = ppuDecayThresholds;
   // First, decay any expired bits
   let latch = hw.ppu.ioLatch;
   for (let i = 0; i < 8; i++) {
-    if ((now - stamps[i]) > PPU_DECAY_DOTS) latch &= ~(1 << i);
+    if ((now - stamps[i]) > thresh[i]) latch &= ~(1 << i);
   }
   // Apply new driven bits
   latch = (latch & ~mask) | (value & mask);
@@ -30184,8 +30339,7 @@ function ppuBusSet(mask, value) {
 // Read open bus: apply decay, return result. Bits in 'mask' come from open bus,
 // bits NOT in mask come from 'value'. Driven bits (in ~mask) refresh their timestamps.
 function ppuBusApply(mask, value) {
-  ppuBusSet(~mask, value);  // Drive the non-open-bus bits
-  ppuBusDecay();            // Apply decay to the remaining open bus bits
+  ppuBusSet(~mask, value);  // Drive the non-open-bus bits (decays all bits internally first)
   return (value & ~mask) | (hw.ppu.ioLatch & mask);
 }
 
@@ -30378,6 +30532,7 @@ function ppuRegWrite(reg, val) {
         hw.ppu.oamAddr = (hw.ppu.oamAddr + 4) & 0xFC;
       } else {
         if ((hw.ppu.oamAddr & 0x03) === 0x02) val &= 0xE3; // Mask attribute bits 2-4
+        oamRefreshRow(hw.ppu.oamAddr); // DRAM row refresh on write (before addr increment)
         hw.oam[hw.ppu.oamAddr] = val;
         hw.ppu.oamAddr = (hw.ppu.oamAddr + 1) & 0xFF;
       }
@@ -30464,6 +30619,16 @@ let bgShiftAL = 0, bgShiftAH = 0;  // 16-bit attribute shift registers
 let bgNtByte = 0, bgAtByte = 0, bgPtLo = 0, bgPtHi = 0;
 let bgAtRaw = 0;              // Raw attribute byte before shift (for $2007 rendering read)
 let bgAtLatchL = 0, bgAtLatchH = 0;
+
+// ── BG Shift Register Decay (NESdev PPU_rendering §Notes) ──
+// "The storage registers, shift registers, and 1-bit latches described here
+//  decay to 0 on a time scale of probably around 2 frames."
+// "Bits leaving the attributes and low pattern data registers are inverted,
+//  and then inverted back before the background/sprite priority mux.
+//  Because of this, if they decay to 0, they actually end up as 1's in the output."
+// Modeled as a read-site filter in bgPixel() — shift registers are never modified.
+let bgRegLastActiveDot = 0;              // dotsRun when BG fetches last loaded data
+const _BG_DECAY_DOTS = 178684;          // ~2 frames (341 × 262 × 2) — documented approximate
 
 // NESdev PPU rendering / AccuracyCoin "$2007 Stress Test" (RP2C02G verified):
 // During rendering, $2007 reads fill the buffer from the rendering fetch cadence,
@@ -30597,6 +30762,7 @@ function bgFetch(dot) {
       bgAtLatchH = (bgAtByte & 2) ? 0xFF : 0;
       bgShiftAL = (bgShiftAL & 0xFF00) | bgAtLatchL;
       bgShiftAH = (bgShiftAH & 0xFF00) | bgAtLatchH;
+      bgRegLastActiveDot = hw.ppu.dotsRun; // BG decay: registers refreshed by tile load
       bgNtByte = ppuRead(0x2000 | (v & 0x0FFF));
       break;
     }
@@ -30625,6 +30791,17 @@ function bgFetch(dot) {
 function bgPixel() {
   if (!(hw.ppu.mask & 0x08)) return 0; // BG disabled
   if (!(hw.ppu.mask & 0x02) && hw.ppu.dot < 9) return 0; // Left 8px clipping
+
+  // ── BG Shift Register Decay Filter ──
+  // NESDev PPU_rendering: "decay to 0 on a time scale of probably around 2 frames"
+  // "Bits leaving the attributes and low pattern data registers are inverted...
+  //  if they decay to 0, they actually end up as 1's in the output"
+  // Decayed output: PL(inverted→1), PH(not inverted→0), AL(inverted→1), AH(inverted→1)
+  // Pattern = %01 (pixel=1), Attribute = %11 (palette 3) → palette index $0D
+  if ((hw.ppu.dotsRun - bgRegLastActiveDot) > _BG_DECAY_DOTS) {
+    return (3 << 2) | 1; // 0x0D: palette 3, color 1
+  }
+
   const fineX = hw.ppu.x;
   const bit = 0x8000 >> fineX;
   const p0 = (bgShiftPL & bit) ? 1 : 0;
@@ -30708,7 +30885,8 @@ function processSpriteEvaluation() {
         sprAddrH = (hw.ppu.oamAddr >> 2) & 0x3F;
         sprAddrL = hw.ppu.oamAddr & 0x03;
       }
-      oamCopyBuf = hw.oam[((sprAddrH << 2) | sprAddrL) & 0xFF];
+      oamCopyBuf = oamDecayRead((sprAddrH << 2) | sprAddrL); // Analog decay filter on PPU read
+      oamRefreshRow((sprAddrH << 2) | sprAddrL); // DRAM row refresh on read
     } else {
       // Even cycle: evaluate / write to secondary OAM
       // Note: sprCount/sprZeroOnLine finalization deferred to dot 257 in ppuDot()
@@ -30990,6 +31168,12 @@ function ppuDot() {
   // ── OAM corruption on rendering transitions (hardware bug) ──
   if (prevRendering !== rendering && (visibleLine || preRender)) {
     if (rendering) {
+      // Refresh all OAM row timestamps — rendering resuming means the PPU's
+      // internal DRAM controller is re-activating row access. This prevents
+      // the lazy decay check from zeroing OAM during rapid rendering toggles
+      // (e.g., $2007 stress test). Decay only fires when a row hasn't been
+      // accessed by ANY mechanism for the full threshold period.
+      hw.ppu.oamRowRefreshDot.fill(hw.ppu.dotsRun);
       processOamCorruption();
     } else {
       setOamCorruptionFlags();
@@ -31175,7 +31359,7 @@ function ppuDot() {
     // Reset fires at the top of each tick so that CPU writes to $2003 arriving
     // mid-dot (via ppuCatchUpStart/busWrite/ppuCatchUpEnd) are overwritten by
     // the very next dot's reset, matching the hardware zeroing behavior.
-    if (rendering) hw.ppu.oamAddr = 0;
+    if (rendering) { hw.ppu.oamAddr = 0; oamRefreshRow(0); } // DRAM refresh: addr bus driven to 0
 
     if (dot === 257) {
       sprZeroActive = sprZeroOnLine;
@@ -31251,6 +31435,7 @@ function ppuDot() {
   if (ppuModel.palOamRefresh && sl >= 265 && sl <= 310) {
     if (dot > 0 && (dot & 1) === 0) {
       hw.ppu.oamAddr = (hw.ppu.oamAddr + 1) & 0xFF;
+      oamRefreshRow(hw.ppu.oamAddr); // DRAM row refresh — the increment IS the access
     }
   }
 
@@ -31437,6 +31622,13 @@ function ppuCatchUp() {
 
 // ── Task I: Framebuffer Blit ──
 function blitFramebuffer() {
+  // ── PPU warm-up: after ~10s, decay thresholds shift to faster range ──
+  if (!_ppuDecayWarm && hw.ppu.dotsRun > 341 * 262 * 600) {
+    _ppuDecayWarm = true; _generateDecayThresholds(true);
+  }
+  if (!_oamDecayWarm && hw.ppu.dotsRun > 341 * 262 * 600) {
+    _oamDecayWarm = true; _generateOamDecayThresholds(true);
+  }
   // ── Vs. System coin timer: decrement once per frame ──
   if (vs.active) {
     for (let i = 0; i < 2; i++) {
@@ -34292,7 +34484,7 @@ document.addEventListener('keydown', e => {
   const tag = document.activeElement?.tagName;
   if (tag !== 'INPUT' && tag !== 'TEXTAREA') keyState[e.code] = true;
   // Don't process hotkeys while any rebind is in progress — the rebind handler owns the keyboard
-  if (rebindTarget || turboRebind || gpBtnRebind) return;
+  if (rebindTarget || gpBtnRebind) return;
   // Skip hotkeys when typing in an input field
   if (tag === 'INPUT' || tag === 'TEXTAREA') return;
   // Keyboard Mode toggle — checked before keyboardModeActive guard so it can always turn off
@@ -34338,7 +34530,7 @@ document.addEventListener('keyup', e => {
     _clearPendingMod();
     if (context === 'hk'     && rebindTarget === el) { _commitHkKeyboard(code, el, action); return; }
     if (context === 'player' && rebindTarget === el) { _commitPlayerKey(code); return; }
-    if (context === 'turbo'  && turboRebind  === el) { _commitTurboKeyboard(code); return; }
+    if (context === 'turbo'  && rebindTarget === el) { _commitPlayerKey(code); return; }
   }
 });
 
@@ -38642,7 +38834,7 @@ function gpInputName(b) {
 
 // Rebind state — declared here so buildTurboUI/buildKeyMap can reference them safely
 let gpBtnRebind = null, gpBtnPollId = null;
-let gpTurboRebind = null, gpTurboPollId = null;
+// Turbo rebinding now uses the standard gpBtnRebind / rebindTarget system (unified).
 
 // Shared GP input poll — scans buttons and axes, calls commitFn with the binding value.
 // Returns the interval ID. The deadzone and hat-encoding rules are the same for all rebind types.
@@ -38663,7 +38855,6 @@ function _startGpPoll(commitFn) {
   }, 60);
 }
 function stopGpBtnPoll()   { if (gpBtnPollId)   { clearInterval(gpBtnPollId);   gpBtnPollId   = null; } }
-function stopGpTurboPoll() { if (gpTurboPollId) { clearInterval(gpTurboPollId); gpTurboPollId = null; } }
 
 // Build turbo UI per player — shows keyboard key cells or gamepad button cells based on input device
 function buildTurboUI(player) {
@@ -38671,15 +38862,15 @@ function buildTurboUI(player) {
   const container = $(`turbo-p${pn}`);
   if (!container) return;
   // Cancel any active rebind before replacing DOM elements
-  if (turboRebind && container.contains(turboRebind)) {
-    turboRebind.textContent = formatKeyCode(config.turboKeys[turboRebind.dataset.turbo]);
-    turboRebind.classList.remove('listening');
-    turboRebind = null;
+  if (rebindTarget && container.contains(rebindTarget)) {
+    rebindTarget.textContent = rebindTarget._prevText;
+    rebindTarget.classList.remove('listening');
+    rebindTarget = null;
   }
-  if (gpTurboRebind && container.contains(gpTurboRebind)) {
-    gpTurboRebind.classList.remove('listening');
-    gpTurboRebind = null;
-    stopGpTurboPoll();
+  if (gpBtnRebind && container.contains(gpBtnRebind)) {
+    gpBtnRebind.classList.remove('listening');
+    gpBtnRebind = null;
+    stopGpBtnPoll();
   }
   const device = config.gpSlot['p' + pn] != null ? 'gamepad' : 'keyboard';
   const prefix = `p${pn}`;
@@ -38691,18 +38882,18 @@ function buildTurboUI(player) {
     container.innerHTML =
       `<div style="${headerStyle}">Player ${pn}</div>` +
       `<div class="setting-row"><span class="setting-label">Turbo B</span>` +
-      `<span class="km-key gp-turbo-key${gpbVal == null ? ' unbound' : ''}" data-gpt="${prefix}b">${gpInputName(gpbVal)}</span></div>` +
+      `<span class="km-key gp-btn-key${gpbVal == null ? ' unbound' : ''}" data-gpt="${prefix}b">${gpInputName(gpbVal)}</span></div>` +
       `<div class="setting-row"><span class="setting-label">Turbo A</span>` +
-      `<span class="km-key gp-turbo-key${gpaVal == null ? ' unbound' : ''}" data-gpt="${prefix}a">${gpInputName(gpaVal)}</span></div>`;
+      `<span class="km-key gp-btn-key${gpaVal == null ? ' unbound' : ''}" data-gpt="${prefix}a">${gpInputName(gpaVal)}</span></div>`;
   } else {
     const tk = config.turboKeys;
     const tbVal = tk[prefix+'b'], taVal = tk[prefix+'a'];
     container.innerHTML =
       `<div style="${headerStyle}">Player ${pn}</div>` +
       `<div class="setting-row"><span class="setting-label">Turbo B</span>` +
-      `<span class="km-key turbo-key${!tbVal ? ' unbound' : ''}" data-turbo="${prefix}b">${formatKeyCode(tbVal)}</span></div>` +
+      `<span class="km-key${!tbVal ? ' unbound' : ''}" data-turbo="${prefix}b">${formatKeyCode(tbVal)}</span></div>` +
       `<div class="setting-row"><span class="setting-label">Turbo A</span>` +
-      `<span class="km-key turbo-key${!taVal ? ' unbound' : ''}" data-turbo="${prefix}a">${formatKeyCode(taVal)}</span></div>`;
+      `<span class="km-key${!taVal ? ' unbound' : ''}" data-turbo="${prefix}a">${formatKeyCode(taVal)}</span></div>`;
   }
 }
 
@@ -38794,14 +38985,23 @@ function buildKeyMap(player) {
 
 // Key rebinding — shared for player inputs (data-player/data-btn), PowerPad, FB, Subor
 let rebindTarget = null;
-document.addEventListener('click', e => {
-  // Keyboard rebind: only for km-key cells that are NOT gamepad or turbo cells
-  const el = e.target.closest('.km-key:not(.turbo-key):not(.gp-btn-key):not(.gp-vsstart-key)');
-  if (!el) return;
-  if (rebindTarget) { rebindTarget.textContent = rebindTarget._prevText; rebindTarget.classList.remove('listening'); }
-  // Cancel any active turbo rebind
-  if (turboRebind) { turboRebind.textContent = formatKeyCode(config.turboKeys[turboRebind.dataset.turbo]); turboRebind.classList.remove('listening'); turboRebind = null; }
+
+// Universal cancel — clears any active rebind and stops any running GP poll.
+// Called at the top of every rebind click handler to prevent cross-type interference.
+function cancelAllRebinds() {
+  if (rebindTarget) { rebindTarget.textContent = rebindTarget._prevText; rebindTarget.classList.remove('listening'); rebindTarget = null; }
   _clearPendingMod();
+  if (gpBtnRebind) { gpBtnRebind.textContent = _gpBtnText(gpBtnRebind); gpBtnRebind.classList.remove('listening'); gpBtnRebind = null; stopGpBtnPoll(); }
+  if (gpVsStartRebind) { gpVsStartRebind.textContent = gpInputName(config.vsStartGp[gpVsStartRebind.dataset.vsstart]); gpVsStartRebind.classList.remove('listening'); gpVsStartRebind = null; stopGpBtnPoll(); }
+  if (gpCoinRebind) { gpCoinRebind.textContent = gpInputName(config.coinGp[gpCoinRebind.dataset.coin]); gpCoinRebind.classList.remove('listening'); gpCoinRebind = null; stopGpBtnPoll(); }
+  if (hkGpRebind) { hkGpRebind.textContent = _hotkeyDisplay(hkGpRebind.dataset.hkaction); hkGpRebind.classList.remove('listening'); hkGpRebind = null; stopHkGpPoll(); }
+}
+
+document.addEventListener('click', e => {
+  // Keyboard rebind: km-key cells that are NOT gamepad or hotkey cells (includes turbo keyboard cells)
+  const el = e.target.closest('.km-key:not(.gp-btn-key):not(.gp-vsstart-key):not([data-action])');
+  if (!el) return;
+  cancelAllRebinds();
   rebindTarget = el;
   el._prevText = el.textContent;
   el.classList.add('listening');
@@ -38812,7 +39012,7 @@ document.addEventListener('keydown', e => {
   if (!rebindTarget) return;
   if (e.repeat) return;
   if (rebindTarget.dataset.action) return;
-  if (!rebindTarget.dataset.player && !rebindTarget.dataset.pppad) return;
+  if (!rebindTarget.dataset.player && !rebindTarget.dataset.pppad && !rebindTarget.dataset.turbo) return;
   e.preventDefault();
   const isMod = e.code.startsWith('Shift') || e.code.startsWith('Control') || e.code.startsWith('Alt');
 
@@ -38825,7 +39025,9 @@ document.addEventListener('keydown', e => {
   }
   if (e.code === 'Backspace') {
     _clearPendingMod();
-    if (rebindTarget.dataset.pppad != null) {
+    if (rebindTarget.dataset.turbo) {
+      config.turboKeys[rebindTarget.dataset.turbo] = '';
+    } else if (rebindTarget.dataset.pppad != null) {
       config.keysPowerPad['pad' + parseInt(rebindTarget.dataset.pppad)] = '';
     } else {
       const player = parseInt(rebindTarget.dataset.player);
@@ -38852,16 +39054,19 @@ document.addEventListener('keydown', e => {
   _commitPlayerKey(e.code);
 });
 
+// Helper: get current config display text for a gp-btn-key cell (normal or turbo)
+function _gpBtnText(el) {
+  if (el.dataset.gpt) return gpInputName(config.gpTurbo[el.dataset.gpt]);
+  return gpInputName(config.gpButtons['p'+(parseInt(el.dataset.player)+1)][el.dataset.btn]);
+}
+
 // Gamepad button rebinding
 document.addEventListener('click', e => {
   const el = e.target.closest('.gp-btn-key');
   if (!el) return;
-  // Cancel any active keyboard rebind
-  if (rebindTarget) { rebindTarget.textContent = rebindTarget._prevText; rebindTarget.classList.remove('listening'); rebindTarget = null; }
-  if (gpBtnRebind) { gpBtnRebind.textContent = gpInputName(config.gpButtons['p'+(parseInt(gpBtnRebind.dataset.player)+1)][gpBtnRebind.dataset.btn]); gpBtnRebind.classList.remove('listening'); stopGpBtnPoll(); }
+  cancelAllRebinds();
   gpBtnRebind = el;
-  // Derive _prevText from config — immune to stale DOM text left by prior listening state
-  el._prevText = gpInputName(config.gpButtons['p'+(parseInt(el.dataset.player)+1)][el.dataset.btn]);
+  el._prevText = _gpBtnText(el);
   el.classList.add('listening');
   el.textContent = '...';
   gpBtnPollId = _startGpPoll(_commitGpBinding);
@@ -38869,9 +39074,14 @@ document.addEventListener('click', e => {
 
 function _commitGpBinding(value) {
   if (!gpBtnRebind) return;
-  const player = parseInt(gpBtnRebind.dataset.player);
-  const btn = gpBtnRebind.dataset.btn;
-  config.gpButtons['p' + (player + 1)][btn] = value;
+  if (gpBtnRebind.dataset.gpt) {
+    // Turbo gamepad binding — route to gpTurbo config
+    config.gpTurbo[gpBtnRebind.dataset.gpt] = value;
+  } else {
+    const player = parseInt(gpBtnRebind.dataset.player);
+    const btn = gpBtnRebind.dataset.btn;
+    config.gpButtons['p' + (player + 1)][btn] = value;
+  }
   gpBtnRebind.textContent = gpInputName(value);
   gpBtnRebind.classList.remove('listening', 'unbound');
   if (value == null) gpBtnRebind.classList.add('unbound');
@@ -38885,9 +39095,7 @@ let gpVsStartRebind = null;
 document.addEventListener('click', e => {
   const el = e.target.closest('.gp-vsstart-key');
   if (!el) return;
-  if (rebindTarget) { rebindTarget.textContent = rebindTarget._prevText; rebindTarget.classList.remove('listening'); rebindTarget = null; }
-  if (gpBtnRebind) { gpBtnRebind.textContent = gpInputName(config.gpButtons['p'+(parseInt(gpBtnRebind.dataset.player)+1)][gpBtnRebind.dataset.btn]); gpBtnRebind.classList.remove('listening'); stopGpBtnPoll(); }
-  if (gpVsStartRebind) { gpVsStartRebind.textContent = gpInputName(config.vsStartGp[gpVsStartRebind.dataset.vsstart]); gpVsStartRebind.classList.remove('listening'); stopGpBtnPoll(); }
+  cancelAllRebinds();
   gpVsStartRebind = el;
   el._prevText = gpInputName(config.vsStartGp[el.dataset.vsstart]);
   el.classList.add('listening');
@@ -38912,10 +39120,7 @@ let gpCoinRebind = null;
 document.addEventListener('click', e => {
   const el = e.target.closest('.gp-coin-key');
   if (!el) return;
-  if (rebindTarget) { rebindTarget.textContent = rebindTarget._prevText; rebindTarget.classList.remove('listening'); rebindTarget = null; }
-  if (gpBtnRebind) { gpBtnRebind.textContent = gpInputName(config.gpButtons['p'+(parseInt(gpBtnRebind.dataset.player)+1)][gpBtnRebind.dataset.btn]); gpBtnRebind.classList.remove('listening'); stopGpBtnPoll(); }
-  if (gpVsStartRebind) { gpVsStartRebind.textContent = gpInputName(config.vsStartGp[gpVsStartRebind.dataset.vsstart]); gpVsStartRebind.classList.remove('listening'); stopGpBtnPoll(); }
-  if (gpCoinRebind) { gpCoinRebind.textContent = gpInputName(config.coinGp[gpCoinRebind.dataset.coin]); gpCoinRebind.classList.remove('listening'); stopGpBtnPoll(); }
+  cancelAllRebinds();
   gpCoinRebind = el;
   el._prevText = gpInputName(config.coinGp[el.dataset.coin]);
   el.classList.add('listening');
@@ -38966,8 +39171,12 @@ document.addEventListener('keydown', e => {
   }
   if (e.code === 'Escape') {
     e.preventDefault();
-    const p = parseInt(gpBtnRebind.dataset.player) + 1;
-    gpBtnRebind.textContent = gpInputName(config.gpButtons['p'+p][gpBtnRebind.dataset.btn]);
+    if (gpBtnRebind.dataset.gpt) {
+      gpBtnRebind.textContent = gpInputName(config.gpTurbo[gpBtnRebind.dataset.gpt]);
+    } else {
+      const p = parseInt(gpBtnRebind.dataset.player) + 1;
+      gpBtnRebind.textContent = gpInputName(config.gpButtons['p'+p][gpBtnRebind.dataset.btn]);
+    }
     gpBtnRebind.classList.remove('listening');
     gpBtnRebind = null;
     stopGpBtnPoll();
@@ -38976,81 +39185,6 @@ document.addEventListener('keydown', e => {
     _commitGpBinding(null);
   }
   // All other keys ignored during gamepad rebind
-});
-
-// Keyboard turbo rebinding — mirrors gamepad turbo pattern exactly
-let turboRebind = null;
-document.addEventListener('click', e => {
-  const el = e.target.closest('.turbo-key');
-  if (!el) return;
-  // Cancel any active player/hotkey rebind
-  if (rebindTarget) { rebindTarget.textContent = rebindTarget._prevText; rebindTarget.classList.remove('listening'); rebindTarget = null; }
-  // Cancel previous turbo rebind if still active
-  if (turboRebind) { turboRebind.textContent = formatKeyCode(config.turboKeys[turboRebind.dataset.turbo]); turboRebind.classList.remove('listening'); }
-  _clearPendingMod();
-  turboRebind = el;
-  el.classList.add('listening');
-  el.textContent = '...';
-});
-document.addEventListener('keydown', e => {
-  if (!turboRebind) return;
-  if (e.repeat) return;
-  e.preventDefault();
-  const isMod = e.code.startsWith('Shift') || e.code.startsWith('Control') || e.code.startsWith('Alt');
-  if (e.code === 'Escape') {
-    _clearPendingMod();
-    turboRebind.textContent = formatKeyCode(config.turboKeys[turboRebind.dataset.turbo]);
-    turboRebind.classList.remove('listening');
-    turboRebind = null;
-    return;
-  }
-  if (e.code === 'Backspace') { _clearPendingMod(); _commitTurboKeyboard(null); return; }
-  if (isMod) {
-    _hkPendingMod = { code: e.code, el: turboRebind, context: 'turbo' };
-    turboRebind.textContent = formatKeyCode(e.code) + '+…';
-    return;
-  }
-  if (_hkPendingMod && _hkPendingMod.context === 'turbo') {
-    _commitTurboKeyboard(_hkPendingMod.code + '+' + e.code);
-    return;
-  }
-  _commitTurboKeyboard(e.code);
-});
-
-// Gamepad turbo button rebinding — click to listen, press gamepad button to bind
-document.addEventListener('click', e => {
-  const el = e.target.closest('.gp-turbo-key');
-  if (!el) return;
-  if (gpTurboRebind) { gpTurboRebind.textContent = gpTurboRebind._prevText; gpTurboRebind.classList.remove('listening'); if (gpTurboRebind._prevText === '—') gpTurboRebind.classList.add('unbound'); else gpTurboRebind.classList.remove('unbound'); }
-  stopGpTurboPoll();
-  gpTurboRebind = el;
-  el._prevText = gpInputName(config.gpTurbo[el.dataset.gpt]);
-  el.classList.add('listening');
-  el.textContent = '...';
-  gpTurboPollId = _startGpPoll(_commitGpTurbo);
-});
-function _commitGpTurbo(value) {
-  if (!gpTurboRebind) return;
-  const key = gpTurboRebind.dataset.gpt;
-  config.gpTurbo[key] = value;
-  gpTurboRebind.textContent = gpInputName(value);
-  gpTurboRebind.classList.remove('listening', 'unbound');
-  if (value == null) gpTurboRebind.classList.add('unbound');
-  gpTurboRebind = null;
-  stopGpTurboPoll();
-  saveConfig();
-}
-// Escape cancels, Backspace clears gamepad turbo rebind
-document.addEventListener('keydown', e => {
-  if (!gpTurboRebind) return;
-  if (e.code === 'Escape') {
-    e.preventDefault();
-    gpTurboRebind.textContent = gpInputName(config.gpTurbo[gpTurboRebind.dataset.gpt]);
-    gpTurboRebind.classList.remove('listening');
-    gpTurboRebind = null;
-    stopGpTurboPoll();
-  }
-  if (e.code === 'Backspace') { e.preventDefault(); _commitGpTurbo(null); }
 });
 
 $('btn-reset-keys-p1').addEventListener('click', () => {
@@ -39153,9 +39287,7 @@ function buildFBKeyMap() {
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-pppad]');
   if (!el) return;
-  if (rebindTarget) { rebindTarget.textContent = rebindTarget._prevText; rebindTarget.classList.remove('listening'); }
-  if (turboRebind) { turboRebind.textContent = formatKeyCode(config.turboKeys[turboRebind.dataset.turbo]); turboRebind.classList.remove('listening'); turboRebind = null; }
-  _clearPendingMod();
+  cancelAllRebinds();
   rebindTarget = el;
   el._prevText = el.textContent;
   el.classList.add('listening');
@@ -39412,13 +39544,7 @@ function vsUpdateDipUI() {
 document.addEventListener('click', e => {
   const el = e.target.closest('.km-key[data-action]');
   if (!el) return;
-  if (rebindTarget) { rebindTarget.textContent = rebindTarget._prevText; rebindTarget.classList.remove('listening'); }
-  // Cancel any active turbo rebind
-  if (turboRebind) { turboRebind.textContent = formatKeyCode(config.turboKeys[turboRebind.dataset.turbo]); turboRebind.classList.remove('listening'); turboRebind = null; }
-  // Cancel any pending modifier
-  _clearPendingMod();
-  // If a GP hotkey poll was running cancel it
-  if (hkGpRebind) { hkGpRebind.classList.remove('listening'); hkGpRebind = null; stopHkGpPoll(); }
+  cancelAllRebinds();
   rebindTarget = el;
   el._prevText = el.textContent;
   el.classList.add('listening');
@@ -39460,7 +39586,10 @@ function _commitHkKeyboard(combo, el, action) {
 
 function _commitPlayerKey(value) {
   if (!rebindTarget) return;
-  if (rebindTarget.dataset.pppad != null) {
+  if (rebindTarget.dataset.turbo) {
+    // Turbo keyboard binding — route to turboKeys config
+    config.turboKeys[rebindTarget.dataset.turbo] = value || '';
+  } else if (rebindTarget.dataset.pppad != null) {
     const padNum = parseInt(rebindTarget.dataset.pppad);
     config.keysPowerPad['pad' + padNum] = value;
   } else {
@@ -39471,22 +39600,12 @@ function _commitPlayerKey(value) {
   }
   rebindTarget.textContent = formatKeyCode(value);
   rebindTarget.classList.remove('listening', 'unbound');
+  if (!value) rebindTarget.classList.add('unbound');
   rebindTarget = null;
   _clearPendingMod();
   saveConfig();
 }
 
-function _commitTurboKeyboard(value) {
-  if (!turboRebind) return;
-  const key = turboRebind.dataset.turbo;
-  config.turboKeys[key] = value || '';
-  turboRebind.textContent = formatKeyCode(value);
-  turboRebind.classList.remove('listening', 'unbound');
-  if (!value) turboRebind.classList.add('unbound');
-  turboRebind = null;
-  _clearPendingMod();
-  saveConfig();
-}
 
 document.addEventListener('keydown', e => {
   if (!rebindTarget || !rebindTarget.dataset.action) return;
@@ -42491,15 +42610,7 @@ toggleDebugPanel = function(id) {
 const origCloseSettings = closeSettings;
 closeSettings = function() {
   origCloseSettings();
-  // Cancel any in-progress rebind (key, turbo key, or gamepad turbo button)
-  if (rebindTarget) { rebindTarget.textContent = rebindTarget._prevText; rebindTarget.classList.remove('listening'); rebindTarget = null; }
-  _clearPendingMod();
-  if (turboRebind) { turboRebind.textContent = formatKeyCode(config.turboKeys[turboRebind.dataset.turbo]); turboRebind.classList.remove('listening'); turboRebind = null; }
-  if (gpTurboRebind) { gpTurboRebind.textContent = gpTurboRebind._prevText; if (gpTurboRebind._prevText === '—') gpTurboRebind.classList.add('unbound'); else gpTurboRebind.classList.remove('unbound'); gpTurboRebind.classList.remove('listening'); gpTurboRebind = null; stopGpTurboPoll(); }
-  if (gpBtnRebind) { const _p = parseInt(gpBtnRebind.dataset.player)+1; gpBtnRebind.textContent = gpInputName(config.gpButtons['p'+_p][gpBtnRebind.dataset.btn]); gpBtnRebind.classList.remove('listening'); gpBtnRebind = null; stopGpBtnPoll(); }
-  if (gpVsStartRebind) { gpVsStartRebind.textContent = gpInputName(config.vsStartGp[gpVsStartRebind.dataset.vsstart]); gpVsStartRebind.classList.remove('listening'); gpVsStartRebind = null; stopGpBtnPoll(); }
-  if (gpCoinRebind) { gpCoinRebind.textContent = gpInputName(config.coinGp[gpCoinRebind.dataset.coin]); gpCoinRebind.classList.remove('listening'); gpCoinRebind = null; stopGpBtnPoll(); }
-  if (hkGpRebind) { hkGpRebind.textContent = _hotkeyDisplay(hkGpRebind.dataset.hkaction); hkGpRebind.classList.remove('listening'); hkGpRebind = null; stopHkGpPoll(); }
+  cancelAllRebinds();
   if (debugAnimFrame) { cancelAnimationFrame(debugAnimFrame); debugAnimFrame = null; }
   debugOpenPanels.clear();
   debugCleanup();
@@ -45846,7 +45957,7 @@ ctx.putImageData(imageData, 0, 0);
 
 requestAnimationFrame(mainLoop);
 
-console.log('%c KuroganeNES %c v1.0 — Cycle-Accurate NES/FDS Emulator ', 'background:#e23c3c;color:#fff;font-weight:bold;padding:2px 6px;border-radius:3px 0 0 3px', 'background:#1c1c22;color:#e8e6f0;padding:2px 6px;border-radius:0 3px 3px 0');
+console.log('%c KuroganeNES %c v1.0.1 — Cycle-Accurate NES/FDS Emulator ', 'background:#e23c3c;color:#fff;font-weight:bold;padding:2px 6px;border-radius:3px 0 0 3px', 'background:#1c1c22;color:#e8e6f0;padding:2px 6px;border-radius:0 3px 3px 0');
 
 
 // ── §19  NSF PLAYER — Full NES Sound Format playback engine ──
