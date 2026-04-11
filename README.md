@@ -8,6 +8,23 @@ A cycle-accurate NES / Famicom Disk System emulator that runs entirely in the br
 
 > If upgrading from v1.0, reset settings to defaults (Settings > Actions > Reset Settings to Default) to fix the accuracy bug and joystick handling.
 
+### Display
+- CRT Filter renamed to **Video Overlay** (off, scanlines, dot matrix) to better reflect its function as a post-process overlay rather than a signal-level filter. The composite video output is now a separate system-level setting.
+
+### NTSC Composite Video (RP2C02G Hardware-Accurate)
+All composite video fixes target the NES-001 front-loader's RP2C02G PPU output, verified against NESdev wiki NTSC_video, lidnariq's terminated measurements, and Bisqwit's reference decoder.
+
+- **Emphasis phase attenuation fix**: corrected EMPH_ATTEN table indices from complement phases (hues 6/A/2) to correct active phases (colors C/4/8) per NESdev NTSC_video - Color Tint Bits and the reference C++ `NTSCsignal` function. This was a 180° phase error causing wrong emphasis tint colors in composite mode.
+- **YUV decode matrix**: replaced YIQ matrix with SMPTE 170M YUV matrix (`R = Y + 1.139883V`, `G = Y - 0.394642U - 0.580622V`, `B = Y + 2.032062U`) per NESdev NTSC_video - Converting YUV to signal RGB. YIQ decoding is not used by any modern TV receiver (SMPTE 170M, SMPTE EG 27-2004).
+- **Chroma demodulation phase alignment**: added +2.5 phase offset to COS12/SIN12 quadrature reference tables, matching the NESdev reference C++ decoder's `sin(π*(phase+p+3.0-0.5)/6)` formula. This aligns the U/V demodulation axes to the burst reference at phase 8.
+- **×2 chroma saturation correction**: added the demodulation integral correction factor documented in NESdev NTSC_video - Chroma saturation correction (`integral of sin²(2πx) over a cycle is 0.5`).
+- **Border pixel encoding**: left border (dot 0) and right border (dots 257-258) are now encoded into the composite signal buffer with the backdrop color, providing proper context for the 12-sample decode filter window. Fixes edge pixel corruption and bar truncation in cycle-timed demos (demo_ntsc_Blueemp).
+- **Differential phase distortion (DPD)**: enabled the IIR RC lowpass filter modeling the 2C02G's voltage-dependent output impedance (~-5° hue rotation per palette row, amount 3.0 ≈ 14° total delta). Removed incorrect `Math.abs()` on voltage ratio per NESdev reference Python code. DPD is hardware-accurate to the NES-001, the slight desaturation it produces matches real analog output.
+- **Retroactive composite signal re-encode**: when `$2001` (PPUMASK) is written mid-scanline, the composite signal buffer is retroactively re-encoded with the OLD greyscale/emphasis values up to the pipeline cutoff point (dot - 3), matching the `flushGreyscaleEmphasis` mechanism used in clean mode. This correctly handles rapid `$2001` write sequences in cycle-timed demos.
+
+### PAL Composite Video (RP2C07)
+- **Burst angle calibration**: updated `burstUVAngle` from 96° to 108.4° and `satScale` from 0.62 to 0.61, optimized against Pally v0.22.1 2C07 reference palette (48 chromatic entries, RMS 11.8 per channel).
+
 ### Input
 - Turbo input unification: eliminated the entire separate turbo rebind system (`turboRebind`, `gpTurboRebind`, `gpTurboPollId`, `_commitTurboKeyboard`, `_commitGpTurbo`, and all 4 separate turbo event listeners) and routed turbo through the standard input rebind system. Turbo cells now use the same `km-key`/`gp-btn-key` classes with `data-turbo`/`data-gpt` attributes, and `_commitPlayerKey`/`_commitGpBinding` handle turbo branches via those attributes.
 - `cancelAllRebinds()` universal cancel helper: single function that clears all 5 rebind states and their polls, called at the top of every click handler plus `closeSettings`, fixing incomplete cross-cancel between rebind types.
@@ -52,7 +69,7 @@ Pulse 1/2, Triangle, Noise, and DMC with NESdev-accurate envelope, sweep, length
 ### DMA Engine
 OAM DMA ($4014) and DMC DMA with full cycle-accurate put/halt/get sequencing, even/odd CPU cycle alignment, bus conflict emulation with APU registers, and correct PPU open bus interaction.
 
-KuroganeNES scores **137/137** on [AccuracyCoin](https://github.com/100thCoin/AccuracyCoin), a comprehensive NES hardware test suite covering CPU timing, DMA sequencing, PPU register behavior, APU frame counter accuracy, interrupt edge cases, and more.
+KuroganeNES scores **138/138** on [AccuracyCoin](https://github.com/100thCoin/AccuracyCoin), a comprehensive NES hardware test suite covering CPU timing, DMA sequencing, PPU register behavior, APU frame counter accuracy, interrupt edge cases, and more.
 
 ---
 
@@ -101,7 +118,7 @@ NROM (0), MMC1/SxROM (1/155), UxROM (2), CNROM (3), MMC3/TxROM (4), MMC5/ExROM (
 - **ROM patching** - apply IPS, BPS, xdelta3/VCDIFF, UPS, PPF, RUP, and APS patches in the browser
 - **NSF player** - NSF/NSFe playback with per-channel oscilloscope, piano roll, track navigation, and channel mute
 - **Integer scaling** - pixel-perfect scaling at any window size
-- **CRT filter** - optional scanline or dot matrix overlay
+- **Video Overlay** - optional scanline or dot matrix post-process overlay
 - **Fullscreen** - browser fullscreen with retained aspect ratio
 
 ### Multiplayer
@@ -224,7 +241,7 @@ Click **Save** to download a `.tas` file containing the ROM hash, cheat codes, F
 Open Settings with the gear icon in the toolbar.
 
 ### Display
-CRT filter (off, scanlines, dot matrix), overscan crop (none, TV/CRT, action safe), aspect ratio (8:7 pixel-perfect or 4:3 CRT), and integer scaling toggle.
+Video Overlay (off, scanlines, dot matrix), overscan crop (none, TV/CRT, action safe), aspect ratio (8:7 pixel-perfect or 4:3 CRT), and integer scaling toggle.
 
 ### Audio
 Master volume and per-channel faders for Pulse 1, Pulse 2, Triangle, Noise, and DMC. An Expansion fader appears when a game uses expansion audio (VRC6, VRC7, MMC5, N163, 5B, FDS, EPSM).

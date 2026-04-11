@@ -158,11 +158,6 @@ html, body {
   image-rendering:pixelated;
   image-rendering:-moz-crisp-edges;
 }
-/* Scanline/grid overlay — positioned over the visible area by JS */
-#scanline-overlay {
-  position:absolute; top:0; left:0;
-  pointer-events:none; z-index:1;
-}
 /* VCR transport OSD — REW/FF/PAUSE/PLAY indicator */
 #vcr-osd {
   position:absolute; top:8%; left:5%;
@@ -2229,7 +2224,7 @@ html, body {
   <div id="screen-area">
     <div id="screen-wrapper">
       <canvas id="nes-canvas" width="256" height="240"></canvas>
-      <div id="scanline-overlay"></div>
+
       <!-- TAS Input Overlay -->
       <div id="tas-overlay" style="display:none">
         <div class="tas-ov-pad" id="tas-ov-p1">
@@ -2433,11 +2428,10 @@ html, body {
       <div class="settings-section">
         <div class="section-label">Display</div>
         <div class="setting-row">
-          <span class="setting-label">CRT Filter</span>
-          <select class="setting-select" id="opt-crt">
-            <option value="off" selected>Off</option>
-            <option value="scanlines">Scanlines</option>
-            <option value="dotmatrix">Dot Matrix</option>
+          <span class="setting-label">Video Output</span>
+          <select class="setting-select" id="opt-video-output">
+            <option value="clean" selected>Clean</option>
+            <option value="composite">Composite</option>
           </select>
         </div>
         <div class="setting-row">
@@ -4947,6 +4941,7 @@ const PPU_MODEL = Object.freeze({
     oddFrameSkip: true,     // Skips 1 dot on odd frames when rendering enabled
     emphasisSwap: false,    // D5=Red, D6=Green
     rgbEmphasis: false,     // Composite: darken non-selected channels
+    isRGB: false,           // Composite video output on VOUT pin
     palOamRefresh: false,   // No forced OAM refresh
     visibleLines: 240,      // Scanlines 0–239
     blackBorder: false,     // No forced black border
@@ -4959,6 +4954,7 @@ const PPU_MODEL = Object.freeze({
     oddFrameSkip: false,    // Never skips dots
     emphasisSwap: true,     // D5=Green, D6=Red (swapped)
     rgbEmphasis: false,     // Composite: darken non-selected channels
+    isRGB: false,           // Composite video output on VOUT pin
     palOamRefresh: true,    // Refreshes OAM during scanlines 265–310
     visibleLines: 240,      // Scanlines 0–239 (same as NTSC; NESdev PPU_rendering)
     blackBorder: true,      // 2px L/R, 1px top forced black
@@ -4971,6 +4967,7 @@ const PPU_MODEL = Object.freeze({
     oddFrameSkip: false,    // Never skips dots
     emphasisSwap: true,     // Same as PAL: D5=Green, D6=Red
     rgbEmphasis: false,     // Composite: darken non-selected channels
+    isRGB: false,           // Composite video output
     palOamRefresh: false,   // Lacks OAM refresh (unlike 2C07)
     visibleLines: 240,      // Scanlines 0–239 (same as NTSC; NESdev PPU_rendering)
     blackBorder: true,      // Same as 2C07
@@ -4983,6 +4980,7 @@ const PPU_MODEL = Object.freeze({
     oddFrameSkip: false,    // RGB PPUs never have the missing dot
     emphasisSwap: false,    // D5=Red, D6=Green (same as 2C02)
     rgbEmphasis: true,      // RGB: force selected channel to full brightness
+    isRGB: true,            // RGB DAC on R/G/B/SYNC pins (Breaks: weighted current summation)
     palOamRefresh: false,
     visibleLines: 240,
     blackBorder: false,
@@ -4996,6 +4994,7 @@ const PPU_MODEL = Object.freeze({
     oddFrameSkip: false,
     emphasisSwap: false,
     rgbEmphasis: true,
+    isRGB: true,            // RGB DAC with scrambled 64x9-bit ROM
     palOamRefresh: false,
     visibleLines: 240,
     blackBorder: false,
@@ -5008,6 +5007,7 @@ const PPU_MODEL = Object.freeze({
     oddFrameSkip: false,
     emphasisSwap: false,
     rgbEmphasis: true,
+    isRGB: true,            // RGB DAC, same palette ROM as 2C03
     palOamRefresh: false,
     visibleLines: 240,
     blackBorder: false,
@@ -5020,6 +5020,7 @@ const PPU_MODEL = Object.freeze({
     oddFrameSkip: false,
     emphasisSwap: false,
     rgbEmphasis: true,
+    isRGB: true,
     palOamRefresh: false,
     visibleLines: 240,
     blackBorder: false,
@@ -5032,6 +5033,7 @@ const PPU_MODEL = Object.freeze({
     oddFrameSkip: false,
     emphasisSwap: false,
     rgbEmphasis: true,
+    isRGB: true,
     palOamRefresh: false,
     visibleLines: 240,
     blackBorder: false,
@@ -5044,6 +5046,7 @@ const PPU_MODEL = Object.freeze({
     oddFrameSkip: false,
     emphasisSwap: false,
     rgbEmphasis: true,
+    isRGB: true,
     palOamRefresh: false,
     visibleLines: 240,
     blackBorder: false,
@@ -5103,6 +5106,9 @@ function setRegion(mode) {
 
   // PPU I/O bus decay — regenerate per-bit thresholds for current region
   _generateDecayThresholds(_ppuDecayWarm);
+
+  // Composite video parameters — samples per pixel, burst phase, phase advance
+  compositeSetParams();
 
   // Status bar update
   const el = typeof $ === 'function' ? $('status-region') : null;
@@ -5181,7 +5187,7 @@ const DEFAULT_KEYS_SUBOR = {
 };
 
 const DEFAULT_CONFIG = {
-  crt:'off', intScale:true, overscan:'crt', aspect:'8:7',
+  intScale:true, overscan:'crt', aspect:'8:7', videoOutput:'clean',
   sound:true, volume:80, volP1:100, volP2:100, volTri:100, volNoi:100, volDmc:100, expVolume:100,
   keysP1:{ ...DEFAULT_KEYS_P1 }, keysP2:{ ...DEFAULT_KEYS_P2 },
   keysP3:{ ...DEFAULT_KEYS_P3 }, keysP4:{ ...DEFAULT_KEYS_P4 },
@@ -6947,6 +6953,7 @@ function powerOn(timingMode) {
   ppuMaskPending = -1; ppuMaskDelay = 0;
   ppuRenderTogglePending = -1; ppuRenderToggleDelay = 0; ppuRenderingEnabled = false;
   ppuEmphOffset = 0; ppuEmphPalette = emphPalette;
+  compositeLastFlushedDot = 0;
   hw.ppu.status = (Math.random() > 0.5) ? 0x80 : 0x00; // NESdev: VBL flag random at power
   hw.ppu.oamAddr = 0;
   hw.ppu.readBuffer = 0;
@@ -7025,7 +7032,8 @@ function resetHw() {
   }
   cpuRegsFromHw(); // Sync plain register variables
   hw.cpu.cycles = -1;            // Start at -1; 8 dummy cycles below advance to 7
-  hw.cpu.irqLine = 0;
+  hw.cpu.irqLine &= ~0x03;       // Clear APU IRQ bits (DMC bit 0, frame counter bit 1)
+                                  // Mapper IRQ bit (bit 2) preserved until mapper.reset() below
   hw.cpu.runIrq = false;
   hw.cpu.prevRunIrq = false;
   hw.cpu.nmiLine = false;
@@ -7064,6 +7072,7 @@ function resetHw() {
   ppuMaskPending = -1; ppuMaskDelay = 0;
   ppuRenderTogglePending = -1; ppuRenderToggleDelay = 0; ppuRenderingEnabled = false;
   ppuEmphOffset = 0; ppuEmphPalette = emphPalette;
+  compositeLastFlushedDot = 0;
   hw.ppu.w = false;
   hw.ppu.readBuffer = 0;
   hw.ppu.t = 0;               // PPUSCROLL/PPUADDR latch cleared
@@ -7089,6 +7098,7 @@ function resetHw() {
 
   // Mapper reset
   hw.mapper.reset();
+  hw.cpu.irqLine &= ~0x04;       // Clear mapper IRQ bit now that mapper has been reset
   if (emu.epsmEnabled && epsm) epsm.reset();
 
   // ── 8 Dummy Reset Cycles — reset ──
@@ -29862,16 +29872,16 @@ const imgBuf32 = new Uint32Array(imageData.data.buffer);
 
 // NES system palette — 64 RGB entries (NESdev standard, NTSC 2C02)
 // Each entry is 0xFFBBGGRR (little-endian ABGR for Uint32 on LE systems)
-// 2C02 PPU palette (ABGR for little-endian ImageData)
+// 2C02G PPU palette (Pally v0.22.1, NESDev wiki reference)
 const PALETTE = new Uint32Array([
-  0xFF666666,0xFF882A00,0xFFA71214,0xFFA4003B,0xFF7E005C,0xFF40006E,0xFF00066C,0xFF001D56,
-  0xFF003533,0xFF00480B,0xFF005200,0xFF084F00,0xFF4D4000,0xFF000000,0xFF000000,0xFF000000,
-  0xFFADADAD,0xFFD95F15,0xFFFF4042,0xFFFE2775,0xFFCC1AA0,0xFF7B1EB7,0xFF2031B5,0xFF004E99,
-  0xFF006D6B,0xFF008738,0xFF00930C,0xFF328F00,0xFF8D7C00,0xFF000000,0xFF000000,0xFF000000,
-  0xFFFFFEFF,0xFFFFB064,0xFFFF9092,0xFFFF76C6,0xFFFF6AF3,0xFFCC6EFE,0xFF7081FE,0xFF229EEA,
-  0xFF00BEBC,0xFF00D888,0xFF30E45C,0xFF82E045,0xFFDECD48,0xFF4F4F4F,0xFF000000,0xFF000000,
-  0xFFFFFEFF,0xFFFFDFC0,0xFFFFD2D3,0xFFFFC8E8,0xFFFFC2FB,0xFFEAC4FE,0xFFC5CCFE,0xFFA5D8F7,
-  0xFF94E5E4,0xFF96EFCF,0xFFABF4BD,0xFFCCF3B3,0xFFF2EBB5,0xFFB8B8B8,0xFF000000,0xFF000000,
+  0xFF626262,0xFF951C00,0xFFAC0419,0xFF9D0042,0xFF6B0061,0xFF25006E,0xFF000565,0xFF001E49,
+  0xFF003722,0xFF004900,0xFF004F00,0xFF164800,0xFF5E3500,0xFF000000,0xFF000000,0xFF000000,
+  0xFFABABAB,0xFFDB4E0C,0xFFFF2E3D,0xFFF31571,0xFFB90B9B,0xFF6212B0,0xFF0427A9,0xFF004689,
+  0xFF006657,0xFF007F23,0xFF008900,0xFF328300,0xFF906D00,0xFF000000,0xFF000000,0xFF000000,
+  0xFFFFFFFF,0xFFFFA557,0xFFFF8782,0xFFFF6DB4,0xFFFF60DF,0xFFC663F8,0xFF6D74F8,0xFF2090DE,
+  0xFF00AEB3,0xFF00C881,0xFF22D556,0xFF6FD33D,0xFFC8C13E,0xFF4E4E4E,0xFF000000,0xFF000000,
+  0xFFFFFFFF,0xFFFFE0BE,0xFFFFD4CD,0xFFFFCAE0,0xFFFFC4F1,0xFFEFC4FC,0xFFCECAFD,0xFFAFD4F5,
+  0xFF9CDFE6,0xFF9AE9D3,0xFFA8EFC2,0xFFC4EFB7,0xFFE5EAB6,0xFFB8B8B8,0xFF000000,0xFF000000,
 ]);
 
 // ── Vs. System RGB PPU Palettes ──
@@ -29945,17 +29955,357 @@ const VS_PALETTES = [
   VS_PALETTE_2C03,      // B: RC2C05-04
 ];
 
-// ── 2C07 PAL palette (NESdev PPU_palettes: Pally-generated, -15° hue shift from 2C02) ──
-// Original source values were in ARGB; corrected here to ABGR (0xFFBBGGRR) for Uint32 LE ImageData.
+// ── RGB PPU Hardware Pipeline (NESDev PPU_palettes, Breaks RP2C04-0003 die) ──
+// "Each of the three video channels uses a 3-bit DAC driven by a look-up table
+//  in a 64x9-bit ROM inside the PPU." — NESDev PPU_palettes
+// "DAC with weighted current summation." — Breaks RGB PPU analysis
+// Each ROM entry packs three 3-bit DAC values as octal: (R << 6) | (G << 3) | B
+
+// 2C03 / 2C05 ROM (NESDev PPU_palettes wiki, verified against 2C03_wiki.pal)
+const RGB_ROM_2C03 = new Uint16Array([
+  0o333,0o014,0o006,0o326,0o403,0o503,0o510,0o420,
+  0o320,0o120,0o031,0o040,0o022,0o000,0o000,0o000,
+  0o555,0o036,0o027,0o407,0o507,0o704,0o700,0o630,
+  0o430,0o140,0o040,0o053,0o044,0o000,0o000,0o000,
+  0o777,0o357,0o447,0o637,0o707,0o737,0o740,0o750,
+  0o660,0o360,0o070,0o276,0o077,0o000,0o000,0o000,
+  0o777,0o567,0o657,0o757,0o747,0o755,0o764,0o772,
+  0o773,0o572,0o473,0o276,0o467,0o000,0o000,0o000,
+]);
+// RP2C04-0001 ROM (NESDev PPU_palettes wiki)
+const RGB_ROM_2C04_0001 = new Uint16Array([
+  0o755,0o637,0o700,0o447,0o044,0o120,0o222,0o704,
+  0o777,0o333,0o750,0o503,0o403,0o660,0o320,0o777,
+  0o357,0o653,0o310,0o360,0o467,0o657,0o764,0o027,
+  0o760,0o276,0o000,0o200,0o666,0o444,0o707,0o014,
+  0o003,0o567,0o757,0o070,0o077,0o022,0o053,0o507,
+  0o000,0o420,0o747,0o510,0o407,0o006,0o740,0o000,
+  0o000,0o140,0o555,0o031,0o572,0o326,0o770,0o630,
+  0o020,0o036,0o040,0o111,0o773,0o737,0o430,0o473,
+]);
+// RP2C04-0002 ROM (NESDev PPU_palettes wiki)
+const RGB_ROM_2C04_0002 = new Uint16Array([
+  0o000,0o750,0o430,0o572,0o473,0o737,0o044,0o567,
+  0o700,0o407,0o773,0o747,0o777,0o637,0o467,0o040,
+  0o020,0o357,0o510,0o666,0o053,0o360,0o200,0o447,
+  0o222,0o707,0o003,0o276,0o657,0o320,0o000,0o326,
+  0o403,0o764,0o740,0o757,0o036,0o310,0o555,0o006,
+  0o507,0o760,0o333,0o120,0o027,0o000,0o660,0o777,
+  0o653,0o111,0o070,0o630,0o022,0o014,0o704,0o140,
+  0o000,0o077,0o420,0o770,0o755,0o503,0o031,0o444,
+]);
+// RP2C04-0003 ROM (NESDev PPU_palettes wiki)
+const RGB_ROM_2C04_0003 = new Uint16Array([
+  0o507,0o737,0o473,0o555,0o040,0o777,0o567,0o120,
+  0o014,0o000,0o764,0o320,0o704,0o666,0o653,0o467,
+  0o447,0o044,0o503,0o027,0o140,0o430,0o630,0o053,
+  0o333,0o326,0o000,0o006,0o700,0o510,0o747,0o755,
+  0o637,0o020,0o003,0o770,0o111,0o750,0o740,0o777,
+  0o360,0o403,0o357,0o707,0o036,0o444,0o000,0o310,
+  0o077,0o200,0o572,0o757,0o420,0o070,0o660,0o222,
+  0o031,0o000,0o657,0o773,0o407,0o276,0o760,0o022,
+]);
+// RP2C04-0004 ROM (NESDev PPU_palettes wiki)
+const RGB_ROM_2C04_0004 = new Uint16Array([
+  0o430,0o326,0o044,0o660,0o000,0o755,0o014,0o630,
+  0o555,0o310,0o070,0o003,0o764,0o770,0o040,0o572,
+  0o737,0o200,0o027,0o747,0o000,0o222,0o510,0o740,
+  0o653,0o053,0o447,0o140,0o403,0o000,0o473,0o357,
+  0o503,0o031,0o420,0o006,0o407,0o507,0o333,0o704,
+  0o022,0o666,0o036,0o020,0o111,0o773,0o444,0o707,
+  0o757,0o777,0o320,0o700,0o760,0o276,0o777,0o467,
+  0o000,0o750,0o637,0o567,0o360,0o657,0o077,0o120,
+]);
+
+// ROM selection by Vs. PPU type nibble (same indexing as VS_PALETTES)
+const RGB_ROM_TABLE = [
+  RGB_ROM_2C03,       // 0: RP2C03/RC2C03
+  null,               // 1: reserved
+  RGB_ROM_2C04_0001,  // 2: RP2C04-0001
+  RGB_ROM_2C04_0002,  // 3: RP2C04-0002
+  RGB_ROM_2C04_0003,  // 4: RP2C04-0003
+  RGB_ROM_2C04_0004,  // 5: RP2C04-0004
+  null, null,         // 6-7: reserved
+  RGB_ROM_2C03,       // 8: RC2C05-01 (same ROM as 2C03)
+  RGB_ROM_2C03,       // 9: RC2C05-02
+  RGB_ROM_2C03,       // A: RC2C05-03
+  RGB_ROM_2C03,       // B: RC2C05-04
+];
+let currentRgbRom = RGB_ROM_2C03; // Active ROM — set during Vs. ROM load
+
+// 3-bit DAC to 8-bit: C = 255 * n / 7 (NESDev PPU_palettes)
+const DAC_TO_8BIT = new Uint8Array([0, 36, 73, 109, 146, 182, 219, 255]);
+
+// RGB PPU pixel output: palette index -> ROM -> DAC -> emphasis -> ABGR
+// "Emphasis applies the corresponding channel output to all one's" — Breaks
+function rgbPpuPixel(palIndex, emphBits) {
+  const rom = currentRgbRom[palIndex & 0x3F];
+  let r = (rom >> 6) & 7, g = (rom >> 3) & 7, b = rom & 7;
+  if (emphBits & 1) r = 7; // Force red DAC to max
+  if (emphBits & 2) g = 7; // Force green DAC to max
+  if (emphBits & 4) b = 7; // Force blue DAC to max
+  return 0xFF000000 | (DAC_TO_8BIT[b] << 16) | (DAC_TO_8BIT[g] << 8) | DAC_TO_8BIT[r];
+}
+
+// ── NTSC Composite Video Pipeline (NESDev NTSC_video, lidnariq measurements, Breaks) ──
+// "Unlike many other game consoles, the NES does not generate RGB or YUV and then
+//  encode that to composite. Instead, it generates NTSC video directly in the
+//  composite domain." — NESDev NTSC_video
+//
+// Each pixel = 8 color generator clocks. The 6-bit palette value's low nibble
+// selects 1 of 12 phase positions; the high nibble selects voltage levels.
+// The output alternates between high/low voltages at the selected phase.
+
+let compositeVideoEnabled = false; // Settings toggle: false = palette LUT (fast)
+
+// Composite DAC pipeline — retroactive re-encode model.
+// On real 2C02 hardware, greyscale/emphasis changes at the DAC output are delayed
+// ~3-4 dots. In clean mode, flushGreyscaleEmphasis() retroactively re-renders pixels
+// in the framebuffer with the OLD values. In composite mode, we do the same thing
+// but re-encode the composite signal buffer samples instead.
+// This variable tracks the last dot that has been flushed with correct values.
+let compositeLastFlushedDot = 0;  // Last PPU dot whose signal is finalized
+
+// Composite parameters — set by setRegion() or on composite toggle
+let compositeSPP = 8;           // Samples per pixel: 8 (NTSC/Dendy) or 10 (PAL)
+let compositePhasePerLine = 4;  // Phase advance per scanline: 4 (NTSC) or 2 (PAL)
+let compositePAL = false;       // PAL mode flag
+let compositeSatScale = 1.0;    // Chroma saturation scale
+let compositePALOdd = false;    // PAL: true on odd scanlines (encoder hue reversal)
+
+// PAL hue reversal table (2C07 hardware behavior)
+// NESDev PAL_video: "The same two square wave oscillators are used for
+// pairs of hues: 3 and 2, 4 and 1, 5 and C, 6 and B, 7 and A, 8 and 9"
+// PAL-CRT (pal_nes.c): hue = 0x0D - ((hue + 2) & 0x0F)
+// Achromatic hues (0, D, E, F) are unchanged.
+const PAL_HUE_REVERSE = new Uint8Array([
+  0x00, 0x0A, 0x09, 0x08, 0x07, 0x06, 0x05, 0x04,
+  0x03, 0x02, 0x01, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F
+]);
+
+function compositeSetParams() {
+  if (emu.timingMode === 'pal') {
+    compositeSPP = 10; compositePhasePerLine = 2;
+    compositePAL = true; compositeSatScale = 0.61;
+  } else {
+    compositeSPP = 8; compositePhasePerLine = 4;
+    compositePAL = false; compositeSatScale = 1.0;
+  }
+  compositeRebuildTables();
+}
+
+// Voltage levels from lidnariq terminated measurements (75 ohm), normalized:
+// Reference: $1D = 312mV = 0.0, $20/$30 = 1100mV = 1.0
+// Index: palette row (value >> 4), 0-3
+const _N = 1 / (1100 - 312); // Normalization factor
+const NTSC_V_HI    = new Float32Array([(616-312)*_N, (840-312)*_N, (1100-312)*_N, (1100-312)*_N]);
+const NTSC_V_LO    = new Float32Array([(228-312)*_N, (312-312)*_N, (552-312)*_N,  (880-312)*_N]);
+const NTSC_V_HI_EM = new Float32Array([(500-312)*_N, (676-312)*_N, (896-312)*_N,  (896-312)*_N]);
+const NTSC_V_LO_EM = new Float32Array([(192-312)*_N, (256-312)*_N, (448-312)*_N,  (712-312)*_N]);
+
+// Pre-computed phase membership: for each hue (1-12), which of the 12 phases are "high"
+// NESDev wiki C++ reference: InColorPhase(color, phase) = (color + phase) % 12 < 6
+const PHASE_HIGH = new Uint8Array(12 * 12); // [hue * 12 + phase] = 1 if high
+for (let hue = 1; hue <= 12; hue++) {
+  for (let p = 0; p < 12; p++) {
+    if ((hue + p) % 12 < 6) PHASE_HIGH[(hue - 1) * 12 + p] = 1;
+  }
+}
+
+// Emphasis phase attenuation: for each emphasis combo (0-7), which phases are attenuated
+// NESDev NTSC_video § Color Tint Bits — attenuator activates when color square wave is HIGH:
+//   PPUMASK bit 5 ($2001.5, emph & 1) → active during color C phases → complement color 6 (red tint)
+//   PPUMASK bit 6 ($2001.6, emph & 2) → active during color 4 phases → complement color A (green tint)
+//   PPUMASK bit 7 ($2001.7, emph & 4) → active during color 8 phases → complement color 2 (blue tint)
+// NESDev reference C++: ((emphasis & 1) && InColorPhase(0xC)) etc.
+const EMPH_ATTEN = new Uint8Array(8 * 12); // [emph * 12 + phase] = 1 if attenuated
+for (let emph = 1; emph < 8; emph++) {
+  for (let phase = 0; phase < 12; phase++) {
+    if ((emph & 1) && PHASE_HIGH[11 * 12 + phase]) EMPH_ATTEN[emph * 12 + phase] = 1; // Color C (hue 12, index 11)
+    if ((emph & 2) && PHASE_HIGH[3 * 12 + phase]) EMPH_ATTEN[emph * 12 + phase] = 1;  // Color 4 (hue 4, index 3)
+    if ((emph & 4) && PHASE_HIGH[7 * 12 + phase]) EMPH_ATTEN[emph * 12 + phase] = 1;  // Color 8 (hue 8, index 7)
+  }
+}
+
+// Sin/cos lookup for the 12 phase positions (quadrature demodulation)
+// Recomputed by compositeSetParams() when region changes.
+// NTSC: YUV-aligned demodulation per nesdev NTSC_video § Composite decoding.
+//   sin extracts U, cos extracts V. Phase offset +2.5 aligns quadrature axes
+//   to burst reference (nesdev C++ decoder: phase+p+3.0-0.5 → constant +2.5).
+// PAL: UV-aligned demodulation with PAL burst angle.
+const COS12 = new Float32Array(12);
+const SIN12 = new Float32Array(12);
+function compositeRebuildTables() {
+  if (compositePAL) {
+    // PAL: UV-aligned demodulation references.
+    // Each NES phase maps to a UV angle: (i - 7) * 30° + burstUVAngle.
+    // burstUVAngle = 108.4° optimized against Pally v0.22.1 2C07 reference palette
+    // (48 chromatic entries, RMS 11.8 per channel, sweep range 60°-120°).
+    // SIN extracts U component, COS extracts V component.
+    const burstUVAngle = 108.4;
+    for (let i = 0; i < 12; i++) {
+      const uvAngle = ((i - 7) * 30 + burstUVAngle) * Math.PI / 180;
+      SIN12[i] = Math.sin(uvAngle);
+      COS12[i] = Math.cos(uvAngle);
+    }
+  } else {
+    // NTSC: YUV quadrature demodulation with burst-aligned phase offset.
+    // nesdev reference C++ decoder: sin(π*(phase+p+3.0-0.5)/6) and cos(π*(phase+p+3.0-0.5)/6)
+    // The +2.5 offset aligns the sin/cos references to the U/V axes relative to burst at phase 8.
+    // Equivalent to angle = 2π*(i+2.5)/12 for each of the 12 discrete phase positions.
+    for (let i = 0; i < 12; i++) {
+      const angle = (i + 2.5) * Math.PI * 2 / 12;
+      SIN12[i] = Math.sin(angle); // Extracts U component
+      COS12[i] = Math.cos(angle); // Extracts V component
+    }
+  }
+}
+compositeRebuildTables(); // Initialize with NTSC defaults
+
+// Composite signal buffer: one scanline, max 341 dots x 10 phases (PAL) = 3410 samples
+const compositeSignal = new Float32Array(341 * 10 + 16);
+
+// PAL delay-line comb filter: stores previous scanline's chroma for averaging
+// NESDev PAL_video: "average the received scanline's chroma with the chroma from
+// the received scanline immediately above it"
+const compositePrevU = new Float32Array(256);
+const compositePrevV = new Float32Array(256);
+
+// Phase tracking
+let compositeColorPhase = 0;  // Phase offset at start of current scanline (0-11)
+let compositeFramePhase = 0;  // Accumulated phase across frames
+
+// Encode one pixel into the composite signal buffer
+// palIndex: 6-bit NES palette index (greyscale already applied if active)
+// emphBits: 3-bit emphasis value from $2001 bits 5-7
+// dot: pixel position (0-340)
+function compositeEncodePixel(palIndex, emphBits, dot) {
+  const hue = palIndex & 0x0F;
+  const row = (palIndex >> 4) & 0x03;
+  const spp = compositeSPP;
+  const base = dot * spp;
+
+  if (hue === 0) {
+    const v = emphBits ? NTSC_V_HI_EM[row] : NTSC_V_HI[row];
+    for (let p = 0; p < spp; p++) compositeSignal[base + p] = v;
+  } else if (hue >= 0x0E) {
+    for (let p = 0; p < spp; p++) compositeSignal[base + p] = 0;
+  } else if (hue === 0x0D) {
+    const v = emphBits ? NTSC_V_LO_EM[row] : NTSC_V_LO[row];
+    for (let p = 0; p < spp; p++) compositeSignal[base + p] = v;
+  } else {
+    // Chromatic ($x1-$xC): square wave at selected phase
+    const encHue = compositePALOdd ? PAL_HUE_REVERSE[hue] : hue;
+    const hueRow = (encHue - 1) * 12;
+    // Precompute phase base: colorPhase + PAL adjustment + dot offset
+    const phaseBase = compositeColorPhase + ((compositePAL && !compositePALOdd) ? 6 : 0) + dot * spp;
+    if (emphBits) {
+      const emphRow = emphBits * 12;
+      const vHi = NTSC_V_HI[row], vLo = NTSC_V_LO[row];
+      const vHiE = NTSC_V_HI_EM[row], vLoE = NTSC_V_LO_EM[row];
+      for (let p = 0; p < spp; p++) {
+        const phase = (phaseBase + p) % 12;
+        const high = PHASE_HIGH[hueRow + phase];
+        compositeSignal[base + p] = EMPH_ATTEN[emphRow + phase]
+          ? (high ? vHiE : vLoE) : (high ? vHi : vLo);
+      }
+    } else {
+      const vHi = NTSC_V_HI[row], vLo = NTSC_V_LO[row];
+      for (let p = 0; p < spp; p++) {
+        compositeSignal[base + p] = PHASE_HIGH[hueRow + (phaseBase + p) % 12] ? vHi : vLo;
+      }
+    }
+  }
+}
+
+// Differential phase distortion — IIR RC lowpass with voltage-dependent time constant
+// NESDev NTSC_video: "causes a rotation of the NTSC signal's effective hue, proportional
+// to the voltage... ~-5° (2C02G) of additional rotation for each row of the palette"
+// NESDev reference Python code: alpha = dt / (voltageRatio * amount * 1e-8 + dt)
+// Lowpass factor 3e-8 ≈ 14 degree delta between $0x and $3x (2C02G estimate)
+const _DPD_DT = 1 / (21477272.727 * 2); // 2x master clock sampling rate
+const _DPD_AMOUNT = 3.0;                 // ~14 degree delta (adjustable)
+const _DPD_WHITE = 1.0;                  // Normalized $30 voltage
+
+function compositeApplyDPD(sampleCount) {
+  let vPrev = compositeSignal[0];
+  for (let i = 0; i < sampleCount; i++) {
+    const v = compositeSignal[i];
+    // NESDev NTSC_video § Differential Phase Distortion reference Python:
+    // voltage_ratio = signal[i] / composite_white (no abs — raw ratio preserves
+    // correct behavior for below-blanking voltages like $0D)
+    const ratio = v / _DPD_WHITE;
+    const alpha = _DPD_DT / (ratio * _DPD_AMOUNT * 1e-8 + _DPD_DT);
+    vPrev = alpha * v + (1 - alpha) * vPrev;
+    compositeSignal[i] = vPrev;
+  }
+}
+
+// Decode one scanline of composite signal to RGB pixels in framebuffer
+function compositeDecodeScanline(scanline) {
+  const spp = compositeSPP;
+  const isPAL = compositePAL;
+  const oddLine = scanline & 1;
+  const fbRow = scanline * 256;
+  // NESDev NTSC_video § Chroma saturation correction: ×2 factor required because
+  // integral of sin²(2πx) over one cycle is 0.5. Combined with 1/12 window average.
+  const chromaNorm = compositeSatScale * 2 / 12;
+  const phBase = compositeColorPhase;
+
+  for (let dot = 0; dot < 256; dot++) {
+    const center = (dot + 1) * spp + (spp >> 1);
+
+    // Luma: lowpass over 12 samples (~1 color cycle)
+    let Y = 0;
+    for (let i = -6; i < 6; i++) Y += compositeSignal[center + i];
+    Y /= 12;
+
+    // Chroma: demodulate with cos/sin reference
+    // SIN12 extracts U, COS12 extracts V (per compositeRebuildTables)
+    let U = 0, V = 0;
+    for (let i = -6; i < 6; i++) {
+      const idx = center + i;
+      const phase = ((phBase + idx) % 12 + 12) % 12;
+      const chroma = compositeSignal[idx] - Y;
+      U += chroma * SIN12[phase];
+      V += chroma * COS12[phase];
+    }
+    U *= chromaNorm; V *= chromaNorm;
+
+    let R, G, B;
+    if (isPAL) {
+      if (oddLine) V = -V;
+      const prevU = compositePrevU[dot];
+      const prevV = compositePrevV[dot];
+      compositePrevU[dot] = U;
+      compositePrevV[dot] = V;
+      U = (U + prevU) * 0.5;
+      V = (V + prevV) * 0.5;
+    }
+    // NESDev NTSC_video § Converting YUV to signal RGB (SMPTE 170M):
+    R = Y + 1.139883 * V;
+    G = Y - 0.394642 * U - 0.580622 * V;
+    B = Y + 2.032062 * U;
+
+    const r8 = R < 0 ? 0 : R > 1 ? 255 : (R * 255 + 0.5) | 0;
+    const g8 = G < 0 ? 0 : G > 1 ? 255 : (G * 255 + 0.5) | 0;
+    const b8 = B < 0 ? 0 : B > 1 ? 255 : (B * 255 + 0.5) | 0;
+
+    framebuffer[fbRow + dot] = 0xFF000000 | (b8 << 16) | (g8 << 8) | r8;
+  }
+}
+
+// ── 2C07 PAL palette (Pally v0.22.1, NESDev wiki reference) ──
+// NESDev: "notably is missing the greys in entries $2D and $3D"
 const PALETTE_2C07 = new Uint32Array([
-  0xFF656565,0xFF872B00,0xFFA71214,0xFFA4003B,0xFF74005C,0xFF34006E,0xFF00066E,0xFF001F5C,
-  0xFF00373B,0xFF004A14,0xFF005200,0xFF004F00,0xFF4D4000,0xFF000000,0xFF000000,0xFF000000,
-  0xFFADADAD,0xFFD85916,0xFFFF423C,0xFFFC3075,0xFFC422A8,0xFF6E1CC4,0xFF1229C4,0xFF004BA8,
-  0xFF006B75,0xFF00863C,0xFF009216,0xFF288D00,0xFF907800,0xFF000000,0xFF000000,0xFF000000,
-  0xFFFEFEFE,0xFFFFAE64,0xFFFF978B,0xFFFF84C4,0xFFFF7AF7,0xFFBE72FF,0xFF647FFF,0xFF189FF8,
-  0xFF00BFC5,0xFF0EDA8B,0xFF44E665,0xFF94E144,0xFFFECC44,0xFF4E4E4E,0xFF000000,0xFF000000,
-  0xFFFEFEFE,0xFFFFDCC0,0xFFFFD3D2,0xFFFFCAE8,0xFFFFC6FE,0xFFE3C3FE,0xFFBFC8FE,0xFFA0D5F8,
-  0xFF8EE2E5,0xFF93EED2,0xFFA8F4C0,0xFFCAF2B4,0xFFFEEAB4,0xFFB7B7B7,0xFF000000,0xFF000000,
+  0xFF626262,0xFF632200,0xFF7D100D,0xFF7D022B,0xFF630044,0xFF360053,0xFF020553,0xFF001544,
+  0xFF00272B,0xFF00360D,0xFF003E00,0xFF023D00,0xFF363300,0xFF000000,0xFF000000,0xFF000000,
+  0xFFABABAB,0xFFA85112,0xFFCB3834,0xFFCB245C,0xFFA8197E,0xFF6B1B92,0xFF242992,0xFF003F7E,
+  0xFF00575C,0xFF006B34,0xFF007612,0xFF247400,0xFF6B6700,0xFF000000,0xFF000000,0xFF000000,
+  0xFFFFFFFF,0xFFFAA162,0xFFFF8985,0xFFFF75AC,0xFFFA6ACF,0xFFBC6CE3,0xFF7579E3,0xFF3790CF,
+  0xFF14A8AC,0xFF14BC85,0xFF37C762,0xFF75C54E,0xFFBCB74E,0xFF4E4E4E,0xFF000000,0xFF000000,
+  0xFFFFFFFF,0xFFFFDDC4,0xFFFFD3D1,0xFFFFCBE1,0xFFFFC7EF,0xFFE7C8F6,0xFFCBCDF6,0xFFB3D6EF,
+  0xFFA6DFE1,0xFFA6E7D1,0xFFB3EBC4,0xFFCBEBBC,0xFFE7E5BC,0xFFB8B8B8,0xFF000000,0xFF000000,
 ]);
 
 // ── Palette Registry: maps config dropdown values to palette arrays ──
@@ -30030,7 +30380,7 @@ function ppuUpdateEmphCache() {
     ? ((raw & 4) | ((raw & 1) << 1) | ((raw & 2) >> 1))
     : raw;
   ppuEmphOffset = emph * 64;
-  const isRGB = ppuModel >= PPU_MODEL['2C03'] && ppuModel <= PPU_MODEL['2C05'];
+  const isRGB = ppuModel.isRGB;
   ppuEmphPalette = isRGB ? emphPaletteRGB : emphPalette;
 }
 
@@ -30047,15 +30397,26 @@ function flushGreyscaleEmphasis(pixelNumber) {
     return;
   }
 
+  // Composite mode: emphasis/greyscale are baked into the composite signal at
+  // encode time (compositeEncodePixel receives live emphBits). The decoder writes
+  // the framebuffer at dot 256. No retroactive fixup needed — just advance pointer.
+  if (compositeVideoEnabled && !ppuModel.isRGB) {
+    lastUpdatedPixel = pixelNumber;
+    return;
+  }
+
   // Current greyscale mask and emphasis offset
   const greyMask = (hw.ppu.mask & 0x01) ? 0x30 : 0x3F;
   const isNeutral = greyMask === 0x3F && ppuEmphOffset === 0;
 
   if (!isNeutral) {
+    const emphBits = ppuEmphOffset >> 6;
     for (let i = lastUpdatedPixel + 1; i <= pixelNumber; i++) {
       const raw = rawPalBuffer[i];
       const masked = raw & greyMask;
-      framebuffer[i] = ppuEmphPalette[ppuEmphOffset + masked];
+      framebuffer[i] = ppuModel.isRGB
+        ? rgbPpuPixel(masked, emphBits)
+        : ppuEmphPalette[ppuEmphOffset + masked];
     }
   } else {
     // No greyscale, no emphasis — pixels already have correct neutral RGBA
@@ -30514,7 +30875,22 @@ function ppuRegWrite(reg, val) {
       }
       flushGreyscaleEmphasis(pixelNumber);
 
-      // Now apply new mask and update emphasis cache
+      // Now apply new mask and update emphasis cache — but first, for composite mode,
+      // retroactively re-encode the signal buffer with the OLD values for dots that
+      // were encoded with values that may have been premature. This is the composite
+      // equivalent of flushGreyscaleEmphasis's retroactive framebuffer fixup.
+      if (compositeVideoEnabled && !ppuModel.isRGB) {
+        const cutoffDot = (sl >= 0 && sl < 240 && dot >= 4 && dot <= 259) ? dot - 3 : 0;
+        const oldGrey = (hw.ppu.mask & 0x01) ? 0x30 : 0x3F;
+        const oldEmph = ppuEmphOffset >> 6;
+        for (let d = compositeLastFlushedDot + 1; d <= cutoffDot; d++) {
+          if (d >= 1 && d <= 256) {
+            const raw = rawPalBuffer[sl * 256 + (d - 1)] & 0x3F;
+            compositeEncodePixel(raw & oldGrey, oldEmph, d);
+          }
+        }
+        compositeLastFlushedDot = cutoffDot;
+      }
       hw.ppu.mask = val;
       ppuUpdateEmphCache();
       // Always recompute the delayed rendering state with a fresh ~4 dot delay.
@@ -30834,7 +31210,7 @@ let secondaryOamAddr = 0;   // Write pointer into secondary OAM (0-31)
 let sprInRange = false;     // Current sprite Y is in range
 let oamCopyDone = false;    // All 64 sprites scanned
 let spr0Added = false;      // First evaluated sprite was added to secondary OAM
-let overflowBugCounter = 0; // Overflow detection bug counter
+let overflowCopyLeft = 0;   // Bytes remaining to copy after overflow match (0-3)
 
 // ── OAM Row Corruption (hardware bug on rendering transitions) ──
 // When rendering is toggled on visible/pre-render scanlines, the internal
@@ -30880,13 +31256,14 @@ function processSpriteEvaluation() {
         spr0Added = false;
         sprInRange = false;
         secondaryOamAddr = 0;
-        overflowBugCounter = 0;
+        overflowCopyLeft = 0;
         oamCopyDone = false;
         sprAddrH = (hw.ppu.oamAddr >> 2) & 0x3F;
         sprAddrL = hw.ppu.oamAddr & 0x03;
       }
-      oamCopyBuf = oamDecayRead((sprAddrH << 2) | sprAddrL); // Analog decay filter on PPU read
-      oamRefreshRow((sprAddrH << 2) | sprAddrL); // DRAM row refresh on read
+      const oamLinear = (sprAddrH << 2) | sprAddrL;
+      oamCopyBuf = oamDecayRead(oamLinear);
+      oamRefreshRow(oamLinear);
     } else {
       // Even cycle: evaluate / write to secondary OAM
       // Note: sprCount/sprZeroOnLine finalization deferred to dot 257 in ppuDot()
@@ -30897,7 +31274,7 @@ function processSpriteEvaluation() {
       } else {
         if (!sprInRange && scanline >= oamCopyBuf &&
             scanline < oamCopyBuf + ((hw.ppu.ctrl & 0x20) ? 16 : 8)) {
-          sprInRange = !oamCopyDone;
+          sprInRange = true;
         }
         if (secondaryOamAddr < 0x20) {
           secondaryOam[secondaryOamAddr] = oamCopyBuf;
@@ -30927,21 +31304,31 @@ function processSpriteEvaluation() {
             if (sprAddrH === 0) oamCopyDone = true;
           }
         } else {
-          oamCopyBuf = secondaryOam[secondaryOamAddr & 0x1F];
-          if (oamCopyDone) {
-            sprAddrH = (sprAddrH + 1) & 0x3F; sprAddrL = 0;
+          // ── Secondary OAM full — overflow evaluation phase ──
+          // NESdev PPU_sprite_evaluation: three distinct states after 8 sprites found.
+          oamCopyBuf = secondaryOam[secondaryOamAddr & 0x1F]; // Bus behavior: always read OAM2
+          if (overflowCopyLeft > 0) {
+            // State B: match was found — finish copying remaining bytes (discarded)
+            sprAddrL++;
+            overflowCopyLeft--;
+            if (sprAddrL >= 4) { sprAddrH = (sprAddrH + 1) & 0x3F; sprAddrL = 0; }
+            if (sprAddrH === 0) oamCopyDone = true;
           } else if (sprInRange) {
+            // Transition from State A → State B: 9th in-range sprite detected
             // Defer overflow flag by 1 dot: sprite eval uses cycle = dot + 1,
             // which processes the overflow check with sub-dot precision.
             // On real hardware, sprite 0 hit fires at cycle 129 and overflow at
             // cycle 130 — a 1-dot gap where only $40 is visible in $2002. Without
             // deferral, both fire during the same ppuDot, eliminating this gap.
             sprOverflowPending = true;
-            sprAddrL++; if (sprAddrL === 4) { sprAddrH = (sprAddrH + 1) & 0x3F; sprAddrL = 0; }
-            if (overflowBugCounter === 0) overflowBugCounter = 3;
-            else { overflowBugCounter--; if (overflowBugCounter === 0) { oamCopyDone = true; sprAddrL = 0; } }
+            // We just matched byte 0 (Y) of the overflow sprite. Copy remaining 3 bytes.
+            sprAddrL++;
+            overflowCopyLeft = 2; // 2 more after this increment (bytes 2 and 3)
+            if (sprAddrL >= 4) { sprAddrH = (sprAddrH + 1) & 0x3F; sprAddrL = 0; overflowCopyLeft = 0; }
+            if (sprAddrH === 0) oamCopyDone = true;
           } else {
-            // PPU overflow bug: increment BOTH H and L (diagonal scan)
+            // State A: diagonal walk — the famous hardware bug
+            // NESdev: "increment BOTH n AND m" — checks byte m of sprite n as if it were Y
             sprAddrH = (sprAddrH + 1) & 0x3F;
             sprAddrL = (sprAddrL + 1) & 0x03;
             if (sprAddrH === 0) oamCopyDone = true;
@@ -31268,22 +31655,58 @@ function ppuDot() {
     // retroactively by flushGreyscaleEmphasis(), matching the 2C02 hardware
     // pipeline where the DAC applies these effects ~2-3 dots downstream.
     const fbIdx = sl * 256 + (dot - 1);
-    rawPalBuffer[fbIdx] = color & 0x3F;
-    framebuffer[fbIdx] = ppuEmphPalette[color & 0x3F];
+    const palIdx6 = color & 0x3F;
+    rawPalBuffer[fbIdx] = palIdx6;
+    if (ppuModel.isRGB) {
+      framebuffer[fbIdx] = rgbPpuPixel(palIdx6, ppuEmphOffset >> 6);
+    } else if (compositeVideoEnabled) {
+      // Greyscale: AND with $30 before the color generator (NESDev PPU_registers)
+      // Live mask reads are correct here — the retroactive re-encode in the $2001
+      // handler stamps OLD values onto dots before the pipeline cutoff point.
+      const greyIdx = (hw.ppu.mask & 0x01) ? (palIdx6 & 0x30) : palIdx6;
+      compositeEncodePixel(greyIdx, ppuEmphOffset >> 6, dot);
+    } else {
+      framebuffer[fbIdx] = ppuEmphPalette[palIdx6];
+    }
 
     // PAL/Dendy black border — 2C07/UA6538 force $0E (black) at picture edges:
-    // 2px left (columns 0–1), 2px right (columns 254–255), 1px top (scanline 0)
+    // 2px left (columns 0-1), 2px right (columns 254-255), 1px top (scanline 0)
     if (ppuModel.blackBorder) {
       const px = dot - 1;
       if (px < 2 || px >= 254 || sl === 0) {
         rawPalBuffer[fbIdx] = 0x0E;
-        framebuffer[fbIdx] = ppuEmphPalette[0x0E];
+        if (compositeVideoEnabled) {
+          compositeEncodePixel(0x0E, 0, dot);
+        } else {
+          framebuffer[fbIdx] = ppuEmphPalette[0x0E];
+        }
       }
     }
 
     // 4. Shift background registers — only when rendering enabled (NESdev: shift register
     // clock derived from rendering enable signal; stale data persists when rendering off)
     if (rendering) bgShift();
+  }
+
+  // Composite video: encode border context and decode the scanline
+  // NESDev NTSC_video § Scanline Timing: left border = 15 dots backdrop, right border = 11 dots
+  // The 12-sample decode window needs signal context beyond the 256 active pixels to avoid
+  // edge artifacts (truncated bars in demo_ntsc_Blueemp, wrong colors at left edge of full_palette).
+  if (compositeVideoEnabled && !ppuModel.isRGB && visibleLine && dot === 256) {
+    // Encode border pixels: backdrop color with current greyscale/emphasis applied
+    const backdropRaw = palCache[0] & 0x3F;
+    const borderPal = (hw.ppu.mask & 0x01) ? (backdropRaw & 0x30) : backdropRaw;
+    const borderEmph = ppuEmphOffset >> 6;
+    // Left border: encode dot 0 (provides context for leftmost decode window)
+    compositeEncodePixel(borderPal, borderEmph, 0);
+    // Right border: encode dots 257-258 (provides context for rightmost decode window)
+    for (let bd = 257; bd <= 258; bd++) compositeEncodePixel(borderPal, borderEmph, bd);
+    // Reset retroactive flush tracker for next scanline
+    compositeLastFlushedDot = 0;
+    // Differential phase distortion: IIR RC lowpass with voltage-dependent time constant
+    // NESDev NTSC_video: ~-5° per palette row on 2C02G (NES-001). Amount 3.0 ≈ 14° total delta.
+    compositeApplyDPD(259 * compositeSPP);
+    compositeDecodeScanline(sl);
   }
 
   // ── Prefetch fetches (dots 321-336) — no pixel output ──
@@ -31439,6 +31862,16 @@ function ppuDot() {
     }
   }
 
+  // ── PPU Address Bus Idle Drive ──
+  // NESdev PPU_rendering: outside of rendering, the v register is continuously
+  // driven onto the PPU address bus (pins AD0-AD7/A8-A13 directly reflect v).
+  // Notify mapper once per scanline at dot 0 — sufficient for edge-based A12
+  // tracking since v doesn't change between CPU accesses and per-access
+  // notifications are already handled by ppuRegRead/ppuRegWrite case 6/7.
+  if (dot === 0 && !fetchLine && hw.mapper.a12Watch) {
+    hw.mapper.a12Watch(hw.ppu.v & 0x3FFF);
+  }
+
   if ((visibleLine || preRender) && dot === 339 && !rendering) {
     for (let i = 0; i < 8; i++) {
       spriteUnits[i].xCounter = 0;
@@ -31460,6 +31893,11 @@ function ppuDot() {
     hw.ppu.dot = 0;
     hw.ppu.scanline = 0;
     hw.ppu.frameOdd = !hw.ppu.frameOdd;
+    // Composite: odd frame skip shifts phase by 8 (one fewer dot = different alignment)
+    if (compositeVideoEnabled) {
+      compositeFramePhase = (compositeFramePhase + 8) % 12;
+      compositeColorPhase = compositeFramePhase;
+    }
     return; // Skip dot 340 entirely — frame is 1 PPU clock shorter
   }
 
@@ -31469,6 +31907,14 @@ function ppuDot() {
   if (hw.ppu.dot > 340) {
     hw.ppu.dot = 0;
     hw.ppu.scanline++;
+
+    // Composite video: advance color phase per scanline
+    // NTSC: +4 clocks/line (227 1/3 color cycles, 3-line pattern)
+    // PAL: +2 clocks/line (284 1/6 color cycles, constant advance)
+    if (compositeVideoEnabled) {
+      compositeColorPhase = (compositeColorPhase + compositePhasePerLine) % 12;
+      compositePALOdd = compositePAL && !!(hw.ppu.scanline & 1);
+    }
 
     // Scanline breakpoint — fires once at dot 0 of the target scanline
     if (dbgSlBreakpoint >= 0 && hw.ppu.scanline === dbgSlBreakpoint) {
@@ -31521,6 +31967,15 @@ function ppuDot() {
     if (hw.ppu.scanline > region.preRenderLine) {
       hw.ppu.scanline = 0;
       hw.ppu.frameOdd = !hw.ppu.frameOdd;
+      // Composite video: reset scanline phase from frame accumulator
+      // NTSC: "phase shifts by 8 clocks after odd frame, 4 after even"
+      // PAL: no frame-to-frame phase variation (312 * 2 = 624 = 52 * 12, wraps to 0)
+      if (compositeVideoEnabled) {
+        if (!compositePAL) {
+          compositeFramePhase = (compositeFramePhase + (hw.ppu.frameOdd ? 4 : 8)) % 12;
+        }
+        compositeColorPhase = compositeFramePhase;
+      }
       // Snapshot CHR pattern data at frame start for debug viewers.
       // MMC3 (and similar) swap CHR banks mid-frame; capturing here ensures
       // the debug nametable/pattern viewers show the initial bank config.
@@ -34377,40 +34832,6 @@ function resizeScreen() {
   canvas.style.marginLeft = -Math.round(os.left * (w / visW)) + 'px';
   canvas.style.marginTop  = -Math.round(os.top * (h / visH)) + 'px';
 
-  // ── Scanline / Grid Overlay ──
-  // Sized to the wrapper (visible area), CSS gradients tile at pixel pitch
-  const overlay = $('scanline-overlay');
-  overlay.style.width  = w + 'px';
-  overlay.style.height = h + 'px';
-  const pitch = Math.round(h / visH); // pixels per NES row (integer)
-
-  // CRT filters require integer scale ≥ 2 to render clean lines
-  const crtOk = Number.isInteger(scale) && scale >= 2;
-  const crtSelect = $('opt-crt');
-  crtSelect.disabled = !crtOk;
-  crtSelect.style.opacity = crtOk ? '' : '0.4';
-  crtSelect.title = crtOk ? '' : 'CRT filters require 2× integer scale or above';
-  if (!crtOk && config.crt !== 'off') {
-    config.crt = 'off';
-    crtSelect.value = 'off';
-  }
-
-  if (config.crt === 'scanlines' && pitch >= 2) {
-    overlay.style.background = `repeating-linear-gradient(to bottom,
-      transparent 0px, transparent ${pitch - 1}px,
-      rgba(0,0,0,0.35) ${pitch - 1}px, rgba(0,0,0,0.35) ${pitch}px)`;
-  } else if (config.crt === 'dotmatrix' && pitch >= 2) {
-    const h_lines = `repeating-linear-gradient(to bottom,
-      transparent 0px, transparent ${pitch - 1}px,
-      rgba(0,0,0,0.4) ${pitch - 1}px, rgba(0,0,0,0.4) ${pitch}px)`;
-    const v_lines = `repeating-linear-gradient(to right,
-      transparent 0px, transparent ${pitch - 1}px,
-      rgba(0,0,0,0.4) ${pitch - 1}px, rgba(0,0,0,0.4) ${pitch}px)`;
-    overlay.style.background = `${h_lines}, ${v_lines}`;
-  } else {
-    overlay.style.background = 'none';
-  }
-
   // Status bar scale display
   const displayScale = Number.isInteger(scale) ? scale : (+scale).toFixed(1);
   $('status-scale').textContent = `${displayScale}×`;
@@ -36822,6 +37243,7 @@ function loadROM(data, name, isFDS) {
       ? desc.vsType : -1; // If DB has separate vs + pp, vs is hardware type alone
     vs.hwType = (hwFromDb >= 0 && hwFromDb <= 6) ? hwFromDb : ((desc.vsType || 0) >> 4) & 0x0F;
     vs.palette = VS_PALETTES[vs.ppuType] || VS_PALETTE_2C03;
+    currentRgbRom = RGB_ROM_TABLE[vs.ppuType] || RGB_ROM_2C03;
     vs.coinTimer[0] = 0; vs.coinTimer[1] = 0;
     vs.coinState[0] = 0; vs.coinState[1] = 0;
     vs.serviceBtn = false;
@@ -36847,6 +37269,18 @@ function loadROM(data, name, isFDS) {
   vsUpdateCoinUI();
   vsUpdateDipUI();
   resolveActivePalette();
+
+  // RGB PPU games (Vs. System, PlayChoice-10, Titler): composite video doesn't apply.
+  // Force clean output and disable the dropdown; restore user's setting for standard NES.
+  const videoOutputEl = typeof $ === 'function' ? $('opt-video-output') : null;
+  if (ppuModel.isRGB) {
+    compositeVideoEnabled = false;
+    if (videoOutputEl) { videoOutputEl.value = 'clean'; videoOutputEl.disabled = true; }
+  } else {
+    compositeVideoEnabled = config.videoOutput === 'composite';
+    if (videoOutputEl) { videoOutputEl.value = config.videoOutput || 'clean'; videoOutputEl.disabled = false; }
+  }
+  compositeSetParams();
 
   // Vs. System overrides: now that vs.active is set, lock out peripheral UI and emu flags.
   // loadROM sets mic/tape/keyboard/zapper flags from config before vs.active is known,
@@ -38450,10 +38884,22 @@ $('settings-close').addEventListener('click', closeSettings);
 $('settings-modal').addEventListener('click', e => { if (e.target === $('settings-modal')) closeSettings(); });
 
 function applyDisplay() {
-  $('opt-crt').value = config.crt;
   $('opt-int-scale').checked = config.intScale;
   $('opt-overscan').value = config.overscan;
   $('opt-aspect').value = config.aspect;
+  // VS System / PlayChoice RGB PPUs don't support composite — force clean and lock the dropdown.
+  // Guard against being called before ppuModel is initialised (startup path).
+  const videoOutputEl = $('opt-video-output');
+  if (vs.active && typeof ppuModel !== 'undefined' && ppuModel.isRGB) {
+    videoOutputEl.value    = 'clean';
+    videoOutputEl.disabled = true;
+    compositeVideoEnabled  = false;
+  } else {
+    videoOutputEl.value    = config.videoOutput || 'clean';
+    videoOutputEl.disabled = false;
+    compositeVideoEnabled  = config.videoOutput === 'composite';
+  }
+  compositeSetParams();
   $('opt-mobile-desktop').checked = config.mobileDesktop;
   $('opt-mic-access').checked    = config.micAccessEnabled;
   $('opt-camera-access').checked = config.cameraAccessEnabled;
@@ -38602,8 +39048,17 @@ function applyPeripherals() {
 
 function applyMisc() {
   $('opt-vrc-irq-stabilize').checked = config.vrcIrqStabilize;
-  $('opt-region').value = config.region;
-  $('opt-palette').value = config.palette || 'auto';
+  // VS System locks region (always NTSC) and palette (ROM-specified RGB) —
+  // show the forced defaults and keep the dropdowns disabled.
+  // applyPeripherals() owns the disabled/opacity state; we just keep the values consistent.
+  const palSel = $('opt-palette'), regSel = $('opt-region');
+  if (vs.active) {
+    palSel.value = 'auto';
+    regSel.value = 'auto';
+  } else {
+    palSel.value = config.palette || 'auto';
+    regSel.value = config.region;
+  }
   $('opt-hot-swap').checked = config.hotSwapRom;
   $('opt-cheats-enabled').checked = config.cheatsEnabled;
   updateCheatsActive();
@@ -38627,10 +39082,13 @@ function bindSettings() {
     });
   };
   // Display settings → only rebuild display + resize
-  bind('opt-crt','crt','value',applyDisplay);
   bind('opt-int-scale','intScale','checked',applyDisplay);
   bind('opt-overscan','overscan','value',applyDisplay);
   bind('opt-aspect','aspect','value',applyDisplay);
+  bind('opt-video-output','videoOutput','value', () => {
+    compositeVideoEnabled = config.videoOutput === 'composite';
+    compositeSetParams();
+  });
   bind('opt-mobile-desktop','mobileDesktop','checked',applyDisplay);
   // Audio settings → only update audio state
   bind('opt-sound','sound','checked',applyAudio);
