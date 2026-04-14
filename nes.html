@@ -30231,10 +30231,11 @@ function compositeApplyDPD(sampleCount) {
   let vPrev = compositeSignal[0];
   for (let i = 0; i < sampleCount; i++) {
     const v = compositeSignal[i];
-    // NESDev NTSC_video § Differential Phase Distortion reference Python:
-    // voltage_ratio = signal[i] / composite_white (no abs — raw ratio preserves
-    // correct behavior for below-blanking voltages like $0D)
-    const ratio = v / _DPD_WHITE;
+    // NESDev NTSC_video § Differential Phase Distortion: voltage-dependent RC lowpass.
+    // Clamp ratio to non-negative: below-blanking voltages (e.g. $0D, V_LO row 0 = -0.107)
+    // produce negative ratios that make alpha > 1.0, turning the lowpass into an amplifier.
+    // This causes unbounded signal growth, eventual NaN, and catastrophic FP slowdown.
+    const ratio = (v > 0 ? v : 0) / _DPD_WHITE;
     const alpha = _DPD_DT / (ratio * _DPD_AMOUNT * 1e-8 + _DPD_DT);
     vPrev = alpha * v + (1 - alpha) * vPrev;
     compositeSignal[i] = vPrev;
