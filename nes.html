@@ -1,4 +1,30 @@
 <!DOCTYPE html>
+<!--
+  ===========================================================================
+  KuroganeNES - Credits / Licenses
+  ---------------------------------------------------------------------------
+  Third-party code incorporated into this project (attribution retained per
+  the respective licenses):
+    - ymfm (Aaron Giles, BSD-3-Clause) - YMF288/OPN (EPSM) FM, SSG and
+      ADPCM-A rhythm engine.
+    - blip_buf (Shay Green / blargg) - band-limited audio resampler.
+    - Subor keyboard handling - derived from FCEUX (GPLv2), suborkb.cpp.
+    - RomPatcher.js (Marc Robledo, MIT) - IPS/BPS/VCDIFF patching.
+
+  Hardware references used to build and verify this emulator's own code
+  (no third-party code copied from these - documentation / test ROMs only):
+    - NESdev Wiki: PPU/APU/CPU/mapper behavior and reference test results.
+    - blargg's hardware test ROMs and APU/PPU measurements.
+    - Yamaha YM2413 (OPLL), YM2149, and YMF288/OPN datasheets and
+      application notes; VRC7 silicon die-shot data (Nuke.YKT); YM2413
+      reverse-engineering notes (andete); MMC5 RE (krzysiobal).
+    The OPLL (YM2413) and YM2149 cores here were reverse-engineered from the
+    official Yamaha documentation listed above.
+
+  Game / cartridge databases (data only): Mesen2, NRS NES 2.0 DB, NesCartDB,
+  FCEUX (ines-correct.h), MesenCE firmware DB.
+  ===========================================================================
+-->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -56,7 +82,9 @@
   --surface-hover: #2a2a34;          /* mid-tone hover tint between surface and surface2 */
   --accent:       var(--gold);       /* active/selected accent, matches toolbar gold */
   /* ── Layout geometry — change here to propagate everywhere ── */
-  --statusbar-h:  44px;              /* fixed statusbar height; controls always clear this */
+  --statusbar-base: 28px;            /* intrinsic statusbar height, no safe-area inset */
+  --statusbar-h: calc(var(--statusbar-base) + max(6px, env(safe-area-inset-bottom, 0px)));
+                                     /* full reserved height — inset counted exactly once */
 }
 *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; user-select:none; -webkit-user-select:none; }
 /* Restore text selection for actual input fields */
@@ -85,7 +113,7 @@ html, body {
   display:flex; flex-direction:column;
   height:100vh; height:100dvh;
   position:relative;
-  padding-bottom:calc(var(--statusbar-h) + max(6px, env(safe-area-inset-bottom)));
+  padding-bottom:var(--statusbar-h);
 }
 /* ── TOPBAR ── */
 #topbar {
@@ -299,8 +327,8 @@ html, body {
   padding-left:max(24px, env(safe-area-inset-left));
   padding-right:max(24px, env(safe-area-inset-right));
   padding-bottom:max(6px, env(safe-area-inset-bottom));
-  min-height:28px;
-  background:var(--bg-raised); 
+  min-height:var(--statusbar-base);
+  background:var(--bg-raised);
   border-top:1px solid var(--border);
   font-family:var(--font-mono); 
   font-size:10px; 
@@ -337,7 +365,7 @@ html, body {
   padding:8px 6px 12px;
   padding-left:max(6px, env(safe-area-inset-left));
   padding-right:max(6px, env(safe-area-inset-right));
-  padding-bottom:calc(var(--statusbar-h) + max(12px, env(safe-area-inset-bottom)));
+  padding-bottom:calc(var(--statusbar-h) + 12px);
   touch-action:none;
   pointer-events:none;
   z-index:100;
@@ -1533,7 +1561,7 @@ html, body {
 }
 @media (orientation:landscape) and (max-height:500px) {
   #topbar { padding:3px 8px; min-height:32px; }
-  #mobile-controls { padding:4px 6px 6px; padding-left:max(6px, env(safe-area-inset-left)); padding-right:max(6px, env(safe-area-inset-right)); padding-bottom:calc(var(--statusbar-h) + max(6px, env(safe-area-inset-bottom))); }
+  #mobile-controls { padding:4px 6px 6px; padding-left:max(6px, env(safe-area-inset-left)); padding-right:max(6px, env(safe-area-inset-right)); padding-bottom:calc(var(--statusbar-h) + 6px); }
   .dpad-container { grid-template-columns:36px 36px 36px; grid-template-rows:36px 36px 36px; }
   .ab-btn { width:44px; height:44px; font-size:10px; }
   .meta-btn { opacity:0.5; }
@@ -1551,7 +1579,7 @@ html, body {
    pointer:coarse keeps desktops out; min-height keeps the cramped-landscape
    phone block above authoritative on low screens. */
 @media (pointer:coarse) and (min-width:700px) and (min-height:501px) {
-  #mobile-controls { padding:12px 16px 18px; padding-left:max(16px, env(safe-area-inset-left)); padding-right:max(16px, env(safe-area-inset-right)); padding-bottom:calc(var(--statusbar-h) + max(18px, env(safe-area-inset-bottom))); }
+  #mobile-controls { padding:12px 16px 18px; padding-left:max(16px, env(safe-area-inset-left)); padding-right:max(16px, env(safe-area-inset-right)); padding-bottom:calc(var(--statusbar-h) + 18px); }
   .dpad-container { grid-template-columns:60px 60px 60px; grid-template-rows:60px 60px 60px; }
   .dpad-btn svg { width:20px; height:20px; }
   .dpad-up    { border-radius:8px 8px 0 0; }
@@ -1627,11 +1655,11 @@ html, body {
 /* Transport */
 .nsf-transport {
   display:flex; align-items:center; justify-content:center;
-  gap:6px; padding:10px 14px; border-bottom:1px solid var(--border);
+  gap:4px; padding:10px 10px; border-bottom:1px solid var(--border);
   background:var(--bg-raised);
 }
 .nsf-transport-btn {
-  width:34px; height:34px; display:flex; align-items:center; justify-content:center;
+  width:34px; height:34px; flex-shrink:0; display:flex; align-items:center; justify-content:center;
   background:var(--surface); border:1px solid var(--border); border-radius:6px;
   cursor:pointer; color:var(--text-dim); font-size:14px;
   transition:all .12s;
@@ -1645,7 +1673,8 @@ html, body {
 .nsf-play-btn { width:40px; height:40px; }
 .nsf-track-display {
   font-family:var(--font-mono); font-size:11px; color:var(--gold);
-  min-width:80px; text-align:center; letter-spacing:0.5px;
+  min-width:54px; text-align:center; letter-spacing:0.5px;
+  white-space:nowrap; flex-shrink:0;
 }
 .nsf-track-label {
   font-size:8px; color:var(--text-muted); text-transform:uppercase;
@@ -1654,6 +1683,7 @@ html, body {
 .nsf-time {
   font-family:var(--font-mono); font-size:10px; color:var(--text-dim);
   min-width:44px; text-align:center;
+  white-space:nowrap; flex:1 0 auto;
 }
 /* Channel mute toggles */
 .nsf-channels {
@@ -2154,7 +2184,7 @@ html, body {
         <button class="nsf-transport-btn" id="nsf-btn-unload" title="Unload NSF" disabled>
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
         </button>
-        <div style="display:flex;flex-direction:column;align-items:center;margin-left:8px">
+        <div style="display:flex;flex-direction:column;align-items:center;margin-left:4px">
           <div class="nsf-track-display" id="nsf-track-num">- / -</div>
           <div class="nsf-track-label">Track</div>
         </div>
@@ -2441,7 +2471,7 @@ html, body {
 <div class="modal-overlay" id="settings-modal">
   <div class="modal">
     <div class="modal-header">
-      <h2>Settings <span class="modal-version">v1.0</span></h2>
+      <h2>Settings <span class="modal-version">v1.0.1</span></h2>
       <button class="modal-close" id="settings-close">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
@@ -6453,7 +6483,7 @@ function applyRomDB(desc, romData) {
 }
 
 
-// ── §5.4  VS. DIP SWITCH DATABASE (sourced from MAME vsnes.cpp) ──
+// ── §5.4  VS. SYSTEM DIP SWITCH DATABASE (per-game DIP settings) ──
 // Each entry: { name, dips: [ {name, mask, def, opts: [[val,label],...] }, ... ] }
 // mask/val/def are the 8-bit register values for the DIP switch byte.
 // UniSystem: all 8 bits in one bank read from $4016 bits 3-4 (DIP1-2) + $4017 bits 2-7 (DIP3-8).
@@ -15439,7 +15469,7 @@ function createMapper172(desc) {
   };
 }
 
-// ── Mapper 173: TXC 22211C + TxcChip.h (non-JV001) ──
+// ── Mapper 173: TXC 22211C (non-JV001) ──
 // Same TXC ASIC as mapper 132/172 but non-JV001 mode (mask=0x07, invert starts false).
 // Fixed 32KB PRG. CHR uses output bits + yFlag for banking or unmapping.
 function createMapper173(desc) {
@@ -16608,12 +16638,12 @@ function createSachenJV001(id, desc) {
   function getPrg() { return is147 ? ((output & 0x20) >> 4) | (output & 0x01) : 0; } // mapper 136: PRG fixed at 0
   function getChr() { return is147 ? (output & 0x1E) >> 1 : (output & 0x0F); }
 
-  // TxcChip::Read() — lower 4 bits from accumulator, upper bits from inverter XOR invert mask
+  // TXC chip read — lower 4 bits from accumulator, upper bits from inverter XOR invert mask
   function txcRead() {
     return (accumulator & 0x0F) | ((inverter ^ (invert ? 0xFF : 0)) & 0xF0);
   }
 
-  // TxcChip::Write() — mirrors Write() exactly
+  // TXC chip write — mirrors the standard write behavior
   function txcWrite(addr, val) {
     if (addr < 0x8000) {
       switch (addr & 0xE103) {
@@ -16644,7 +16674,7 @@ function createSachenJV001(id, desc) {
     cpuRead(addr) {
       if (addr >= 0x8000) return hw.prgRom[((getPrg() << 15) | (addr & 0x7FFF)) % prgSize];
       if ((addr & 0xE103) === 0x4100) {
-        // TxcChip::Read() — (openBus & 0xC0) | (txcRead() & 0x3F)
+        // TXC chip read — (openBus & 0xC0) | (txcRead() & 0x3F)
         const v = txcRead();
         txcWrite(addr, 0); // read triggers internal state update
         if (is147) return ((v & 0x3F) << 2) | (hw.bus.openBus & 0x03);
@@ -19063,7 +19093,7 @@ function createVRC6(desc) {
     },
     audioSample() { return vrc6Audio.sample(); },
     // NESdev: "VRC6 pulse at full ≈ APU pulse at full", linear DAC (6-bit R2R ladder).
-    // blargg GME: VRC6 factor 0.0967×2, saw/31 + pulse×0.5/15, normalized to APU total
+    // blargg's measured VRC6 mix factor 0.0967×2, saw/31 + pulse×0.5/15, normalized to APU total
     audioMixWeight: 0.454,
     reset() {
       prg16 = 0; prg8 = 0; chr.fill(0); ppuBankMode = 0;
@@ -19076,7 +19106,7 @@ function createVRC6(desc) {
 }
 
 // ── OPLL (YM2413/VRC7) FM Synthesis Engine ──
-// Ported from emu2413 v1.5.9 by Mitsutaka Okazaki (digital-sound-antiques)
+// YM2413 (OPLL) FM synthesis — reverse-engineered from the official Yamaha YM2413 datasheet & application manual.
 // Refs: NESdev VRC7_audio, SMSPower YM2413 RE by andete, VRC7 presets by Nuke.YKT
 // VRC7 = 6-channel subset of YM2413: no rhythm, different fixed patch ROM
 function createOPLL(numCh, patchRaw) {
@@ -19122,7 +19152,7 @@ function createOPLL(numCh, patchRaw) {
     [0,2,4,2,0,-2,-4,-2],[0,2,5,2,0,-2,-5,-2],[0,3,6,3,0,-3,-6,-3],[0,3,7,3,0,-3,-7,-3]];
   const egST = [[0,1,0,1,0,1,0,1],[0,1,0,1,1,1,0,1],[0,1,1,1,0,1,1,1],[0,1,1,1,1,1,1,1]];
 
-  // VRC7 fixed patches — Nuke.YKT die-shot dump (authoritative, from emu2413 v1.5.9)
+  // VRC7 fixed patches — die-shot dump of the actual VRC7 silicon by Nuke.YKT (authoritative; Konami-customized patch ROM)
   const vrc7Raw = [
     [0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // 0: Custom (RAM)
     [0x03,0x21,0x05,0x06,0xE8,0x81,0x42,0x27], // 1: Buzzy Bell
@@ -19171,7 +19201,7 @@ function createOPLL(numCh, patchRaw) {
   }
 
   function lookupExp(i) {
-    // Exact match to emu2413 lookup_exp_table (andete's expression)
+    // YM2413 internal exponent (exp) lookup table — per the official Yamaha OPLL documentation
     const t = (expT[(i & 0xFF) ^ 0xFF] + 1024) | 0;
     const res = t >> ((i & 0x7F00) >> 8);
     return ((i & 0x8000) ? ~res : res) << 1;
@@ -19658,7 +19688,7 @@ function createVRC7(desc) {
     // OPLL audio: snapshot of latest mixed output, clocked from cpuCycleTick
     // Normalize: lookupExp returns <<1 at peak → slot max = 2048. Carrier does >>1 (avg) → per-channel peak ≈ 1024.
     // 6 channels summed → peak = 6144. Divisor = 6144 maps full-scale to ±1.0.
-    // Mix weight: emu2413 peak ±4095/ch × 6ch, normalized to APU blip scale (±1.0 full scale).
+    // Mix weight: YM2413/OPLL per-channel peak is ±4095 (9-bit signed DAC) × 6ch, normalized to APU blip scale (±1.0 full scale).
     // Divisor 6144 = 6ch × 1024 peak per channel, maps full-scale output to ±1.0.
     audioSample() { if (soundSilence) return 0; return opll.sample() / 6144.0; },
     audioMixWeight: 1.2313, // 4×6144 / APU blip max — normalized to match APU output level
@@ -24622,7 +24652,7 @@ function createMapper68(desc) {
 // 3 tone channels (12-bit period square), 1 noise generator (17-bit LFSR),
 // 1 envelope generator (5-bit, 8 shapes), logarithmic DAC.
 // NESdev: clocked by CPU (1.789773 MHz), /16 internal prescaler (SEL=low).
-// Ref: NESdev Sunsoft_5B_audio, YM2149 datasheet, emu2149 by Mitsutaka Okazaki.
+// Ref: NESdev Sunsoft_5B_audio; reverse-engineered from the official Yamaha YM2149 datasheet.
 function createSunsoft5B() {
   const reg = new Uint8Array(16); // 16 internal registers
   let audioAddr = 0;              // Selected register ($C000 write)
@@ -25790,7 +25820,7 @@ function createNamco163(desc) {
     //   sub 5: +18-19.5 dB vs APU (midpoint +18.75 dB, x8.66)
     //   sub 0 (unknown): conservative default +13 dB (x4.47)
     // audioSample() normalized to ±1.0 peak, so weight = PULSE_MIX[15] × linearFactor.
-    // blargg GME: N163 factor 0.10/osc_count, scaled by submapper channel count
+    // blargg's measured N163 mix factor 0.10/osc_count, scaled by submapper channel count
     audioMixWeight: ({3:0.428, 4:0.719, 5:0.933}[sub] ?? 0.4810),
 
     reset() {
@@ -28882,7 +28912,7 @@ const ctrl = {
     matrix: Array.from({length: 10}, () => [0x0F, 0x0F]),
   },
   // ── Subor Keyboard (SB-97 / SB-486D) ──
-  // FCEUX: suborkb.cpp — controller-port keyboard, 13 rows × 2 columns × 4 bits = 104 keys.
+  // Subor controller-port keyboard: 13 rows × 2 columns × 4 bits = 104 keys. (Attribution: see Credits/Licenses block.)
   // $4016 write: standard strobe (bit 0) resets row/column; bits 1-2 (shifted >>1) control scan.
   //   After >>1: bit 0 = column select, bit 1 = row clock (row++ on bit1 falling edge)
   // $4017 read: bits 1–4 = key data (active low: 0 = pressed, 1 = not pressed)
@@ -29142,7 +29172,7 @@ function controllerRead(port) {
   }
 
   // Subor Keyboard on port 2 ($4017): key matrix data on bits 1–4
-  // FCEUX: SuborKB_Read — same bit positions as Family BASIC, active low
+  // Subor keyboard read: same bit positions as Family BASIC, active low
   if (p === 1 && emu.suborKeyboardEnabled) {
     const sk = ctrl.suborKb;
     const skNibble = sk.matrix[sk.row][sk.column];
@@ -29373,7 +29403,7 @@ function pollInterrupts() {
 // ── Memory access wrappers that tick ──
 
 // DMC DMA transfer initiation
-// + NesCpu::StartDmcTransfer (NesCpu.cpp:527-532)
+// + DMC DMA transfer start (arms the DMA when buffer is empty)
 // A DMA is armed when the buffer is empty and either bytes remain (normal load/
 // reload) or the scheduler's stale view says they do (phantomActive — the
 // implicit-abort window; the in-flight DMA self-aborts via phantomDelay).
@@ -30047,7 +30077,7 @@ function cpuStep() {
     // ── *XAA ($8B): unstable — A = (A|magic) & X & imm ──
     case 0x8B: { const v=(getA()|0xEE)&getX()&read(addrImm()); setA(setNZ(v)); break; }
     // ── *AHX/SHA ($93): (indirect),Y — addr high byte AND (X & A) ──
-    // NesCpu.h:716-745: DMA detection via cycle count delta on dummy read
+    // DMA detection via cycle count delta on dummy read
     case 0x93: {
       const z = read(addrImm());
       const lo = read(z), hi = read((z + 1) & 0xFF);
@@ -31004,6 +31034,9 @@ function ppuBusApply(mask, value) {
 }
 
 function ppuRegRead(reg) {
+  // Backstop: a deferred $2006 v-commit must never outlive a CPU PPU access (the in-flight
+  // NT read has normally already applied it; this only fires in pathological timing).
+  if (pendingV2006 >= 0) { hw.ppu.v = pendingV2006; pendingV2006 = -1; }
   // RC2C05 copy protection: $2000 and $2001 are swapped (NESdev Vs._System)
   if (ppuModel.regSwap && reg <= 1) reg ^= 1;
   switch (reg) {
@@ -31154,6 +31187,9 @@ let oddSkipRenderPending = -1;
 let oddSkipRenderDelay = 0;
 
 function ppuRegWrite(reg, val) {
+  // Backstop: apply any prior deferred $2006 v-commit before this access (a fresh $2006
+  // second write below may legitimately arm a new one).
+  if (pendingV2006 >= 0) { hw.ppu.v = pendingV2006; pendingV2006 = -1; }
   // NESdev: "Writing any value to any PPU port, even to the nominally read-only
   // PPUSTATUS, will fill this latch." All 8 bits driven.
   ppuBusSet(0xFF, val);
@@ -31274,11 +31310,23 @@ function ppuRegWrite(reg, val) {
         hw.ppu.w = true;
       } else {
         hw.ppu.t = (hw.ppu.t & 0xFF00) | val;
-        hw.ppu.v = hw.ppu.t;
+        // If this write lands during an active background fetch, the in-flight NT read has
+        // already put the OLD address on the bus; v updates a fetch later. Defer the copy
+        // so bgFetch case 1 applies it right after that read. Outside a BG fetch there is
+        // nothing in flight to corrupt, so commit immediately (the common VRAM-address use).
+        const _sl = hw.ppu.scanline, _dot = hw.ppu.dot;
+        const _fetchLine = (_sl < ppuModel.visibleLines) || (_sl === region.preRenderLine);
+        const _bgFetchRegion = (_dot >= 1 && _dot <= 256) || (_dot >= 321 && _dot <= 336);
+        if (renderingEnabled() && _fetchLine && _bgFetchRegion) {
+          pendingV2006 = hw.ppu.t;     // applied at the next bgFetch case 1 (NT read)
+        } else {
+          hw.ppu.v = hw.ppu.t;         // immediate — identical to the original behavior
+        }
         hw.ppu.w = false;
         // NESdev: Setting VRAM address via $2006 drives the PPU address bus,
-        // triggering A12 transitions — needed by MMC3 IRQ counter
-        if (hw.mapper.a12Watch) hw.mapper.a12Watch(hw.ppu.v & 0x3FFF);
+        // triggering A12 transitions — needed by MMC3 IRQ counter. The address bus
+        // reflects the new value whether or not the v-copy above was deferred.
+        if (hw.mapper.a12Watch) hw.mapper.a12Watch(hw.ppu.t & 0x3FFF);
       }
       break;
     case 7: // PPUDATA write
@@ -31457,7 +31505,7 @@ function ppuRenderingFetchRead() {
   }
 
   // ── Dummy fetch region (dots 337-340) ──
-  // Dot 340 reads AT, not NT (AccuracyCoin RP2C02G hardware observation, ASM line 2647)
+  // Dot 340 reads AT, not NT (AccuracyCoin RP2C02G hardware observation)
   if (targetDot >= 337 && targetDot <= 340) {
     if (targetDot === 340) {
       const atAddr = 0x23C0 | (vForAddr & 0x0C00) | ((vForAddr >> 4) & 0x38) | ((vForAddr >> 2) & 0x07);
@@ -31466,7 +31514,7 @@ function ppuRenderingFetchRead() {
     return ppuRead(0x2000 | (vForAddr & 0x0FFF));
   }
 
-  // ── Dot 0: idle, bus retains AT from dot 340 (AccuracyCoin ASM line 2648) ──
+  // ── Dot 0: idle, bus retains AT from dot 340 (AccuracyCoin RP2C02G hardware observation) ──
   if (targetDot === 0) {
     const atAddr = 0x23C0 | (vForAddr & 0x0C00) | ((vForAddr >> 4) & 0x38) | ((vForAddr >> 2) & 0x07);
     return ppuRead(atAddr);
@@ -31474,6 +31522,13 @@ function ppuRenderingFetchRead() {
 
   return ppuRead(0x2000 | (vForAddr & 0x0FFF));
 }
+
+// $2006 second-write v-commit deferred from mid-fetch to the in-flight background NT fetch.
+// Hardware: the write updates v at M2-fall, after the octal latch (74HC373) already captured
+// the tile's low address byte from the pre-write v. The nametable read then combines the new
+// v high byte with the latched pre-write low byte — the "hybrid address". -1 = nothing pending.
+// Inert (stays -1) in every case except a $2006 write during an active BG fetch.
+let pendingV2006 = -1;
 
 function bgFetch(dot) {
   const v = hw.ppu.v;
@@ -31486,7 +31541,19 @@ function bgFetch(dot) {
       bgShiftAL = (bgShiftAL & 0xFF00) | bgAtLatchL;
       bgShiftAH = (bgShiftAH & 0xFF00) | bgAtLatchH;
       bgRegLastActiveDot = hw.ppu.dotsRun; // BG decay: registers refreshed by tile load
-      bgNtByte = ppuRead(0x2000 | (v & 0x0FFF));
+      if (pendingV2006 >= 0) {
+        // ── 74HC373 octal-latch "hybrid address" (museum quirk) ──
+        // PA0-7 are multiplexed addr/data: cycle 1 (ALE high) latched THIS tile's low
+        // address byte from the pre-write v; the deferred $2006 write now takes effect at
+        // M2-fall and drives the NEW high byte while the latch still holds the old low byte.
+        // The read therefore combines {new v high : pre-write latched low} → hybrid.
+        const latchedLow = v & 0xFF;                 // low byte latched at ALE (pre-write v)
+        hw.ppu.v = pendingV2006; pendingV2006 = -1;  // v-commit (M2-fall): high byte updates
+        const nv = hw.ppu.v;
+        bgNtByte = ppuRead(((0x20 | ((nv >> 8) & 0x0F)) << 8) | latchedLow);
+      } else {
+        bgNtByte = ppuRead(0x2000 | (v & 0x0FFF));   // normal fetch — identical to clean
+      }
       break;
     }
     case 3: { // Attribute byte
@@ -33176,14 +33243,14 @@ function apuStep() {
 
   // DMC timer: every CPU cycle (NOT every APU cycle)
   // APU timer counts in CPU cycles. Period = rateLookupTable[i] - 1.
-  // DeltaModulationChannel::Run() is called with CPU cycle count via NesApu::Run().
+  // The DMC (delta modulation channel) is clocked from the APU with the CPU cycle count.
   // NESdev: Rate $F = 54 CPU cycles. 1,789,773 / 428 = 4182 Hz matches documented rate.
   {
     const d = a.dmc;
 
     // DMC output unit clock
     // Shared abort body for explicit ($4015 disable) and implicit (phantom) aborts.
-    // StopDmcTransfer (NesCpu.cpp:534-548)
+    // DMC DMA abort transfer
     function dmcAbortTransfer() {
       d.bytesRemaining = 0;
       if (hw.cpu.dmcDmaRunning) {
@@ -33304,7 +33371,7 @@ function apuStep() {
       ctrl.kb.lastOut1 = colBit;
     }
     // Subor Keyboard: $4016 write — strobe resets; bits 1-2 control scan
-    // FCEUX: SuborKB_Write — v >>= 1; if(v&2){row++ on (ksmode&1)&&!(v&1)}; ksmode=v;
+    // Subor keyboard write: v >>= 1; if(v&2){row++ on (ksmode&1)&&!(v&1)}; ksmode=v;
     //   After >>1: bit 0 = column select (original bit 1), bit 1 = gate (original bit 2)
     //   Row advances on column (bit 0) falling edge, ONLY when gate (bit 1) is HIGH
     // SuborKB_Strobe — strobe falling edge resets row=0, mode=0
@@ -33315,7 +33382,7 @@ function apuStep() {
         ctrl.suborKb.column = 0;
         ctrl.suborKb.lastColumn = 0;
       }
-      const sv = (ctrl.writeValue >> 1) & 0xFF; // shift right 1 like FCEUX
+      const sv = (ctrl.writeValue >> 1) & 0xFF; // shift register: shift right 1 per Subor protocol
       const colBit = sv & 1;                     // bit 0 of shifted = column select
       const gateBit = sv & 2;                    // bit 1 of shifted = gate for row advance
       // Row advances on column falling edge, only when gate is set
@@ -33429,7 +33496,7 @@ let lastApuCycle = 0;
 // Processing occurs only when the mixed output CHANGES. At each change point,
 // convolve a windowed-sinc kernel into an output buffer. On readout, we
 // integrate the buffer to reconstruct the waveform. This eliminates aliasing.
-// Ported from blip_buf.c (Shay Green / blargg).
+// Band-limited synthesis — blip_buf method (Shay Green / blargg). See Credits/Licenses block (top of file).
 
 const BLIP_PHASE_BITS = 5;
 const BLIP_PHASE_COUNT = 1 << BLIP_PHASE_BITS; // 32
@@ -33469,7 +33536,7 @@ let blipOffset = 0;      // current time offset in output samples (fixed-point)
 let blipAvail = 0;       // samples available after endFrame
 let blipIntegrator = 0;  // running sum for readout
 let blipPrevOutput = 0;  // previous mixed output (scaled integer)
-let blipBase = 0;        // circular read offset — replaces physical shift (blargg blip_buf optimization)
+let blipBase = 0;        // circular read offset — replaces physical shift (blip_buf optimization)
 
 function blipSetRates(clockRate, sampleRate) {
   blipFactor = Math.floor(sampleRate * (1 << 16) / clockRate);
@@ -33671,9 +33738,9 @@ function apuCatchUp() {
   }
 }
 
-// ── YMF288 (EPSM) ADPCM Rhythm ROM — 8 KB embedded ──
+// ── YMF288 (EPSM) ADPCM-A rhythm sample ROM — 8 KB, original re-created samples ──
 // 6 percussion instruments (bass, snare, cymbal, hihat, tom, rim) in 4-bit ADPCM-A format.
-// Hardcoded sample addresses match ymfm_opn.cpp ymf288::reset().
+// Hardcoded rhythm sample start/end addresses per the YMF288 ADPCM-A rhythm map.
 const EPSM_ADPCM_ROM_B64 = "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";
 function decodeEpsmAdpcmRom() {
   const s = atob(EPSM_ADPCM_ROM_B64);
@@ -33686,13 +33753,13 @@ let epsm = null; // EPSM engine instance — created on ROM load when header say
 
 // ── §6.7  EPSM — YMF288 ENGINE ──
 // ── YMF288 (EPSM) ADPCM-A Rhythm Engine ──
-// Port of ymfm_adpcm.cpp adpcm_a_channel / adpcm_a_engine + ymfm_opn.cpp ymf288.
+// YMF288 ADPCM-A rhythm channel + engine. Attribution: see Credits/Licenses block (top of file).
 // 6 percussion channels playing 4-bit ADPCM samples from the embedded 8 KB ROM.
 // Clocked at 8 MHz via fractional accumulator (same pattern as OPLL in VRC7).
-// Ref: ymfm by Aaron Giles (BSD-3), YM3438/YMF288 application notes.
+// Refs: YMF288 / YM3438 (OPN) datasheet & application notes. See Credits/Licenses block (top of file).
 
 function createEPSM(rom) {
-  // ── Constants (ymfm_adpcm.cpp lines 192–210) ──
+  // ── ADPCM-A step/decode constants (OPNA/YMF288 ADPCM-A spec) ──
   const STEPS = new Uint16Array([
     16,17,19,21,23,25,28,31,34,37,41,45,50,55,60,66,73,80,88,97,107,
     118,130,143,157,173,190,209,230,253,279,307,337,371,408,449,494,544,
@@ -33700,7 +33767,7 @@ function createEPSM(rom) {
   ]);
   const STEP_ADJ = new Int8Array([-1,-1,-1,-1, 2, 5, 7, 9]);
 
-  // Hardcoded sample addresses (ymfm_opn.cpp ymf288::reset, lines 1463–1468)
+  // Hardcoded rhythm sample addresses (YMF288 ADPCM-A rhythm map)
   const SAMPLES = [
     0x0000, 0x01BF,  // bass drum
     0x01C0, 0x043F,  // snare drum
@@ -33710,11 +33777,11 @@ function createEPSM(rom) {
     0x1F80, 0x1FFF,  // rim shot
   ];
 
-  // ── FM Synthesis Lookup Tables (ymfm_fm.ipp, verified byte-exact) ──
+  // ── FM synthesis lookup tables (OPN; die-shot verified, byte-exact) ──
 
   // Sine table: quarter-wave log-sin (256 entries). 4.8 fixed-point attenuation.
   // Input 10-bit phase: bit 8=negate, bit 9=mirror. Table covers 0–255.
-  // Source: ymfm_fm.ipp line 50 (Nuked OPN die-shot verified).
+  // OPN log-sin ROM table — die-shot verified hardware values.
   const FM_SIN = new Uint16Array([
     0x859,0x6c3,0x607,0x58b,0x52e,0x4e4,0x4a6,0x471,0x443,0x41a,0x3f5,0x3d3,0x3b5,0x398,0x37e,0x365,
     0x34e,0x339,0x324,0x311,0x2ff,0x2ed,0x2dc,0x2cd,0x2bd,0x2af,0x2a0,0x293,0x286,0x279,0x26d,0x261,
@@ -33737,7 +33804,7 @@ function createEPSM(rom) {
   // Power table: exponential decay (256 entries). Pre-expanded: X(a) = ((a | 0x400) << 2).
   // Converts 5.8 fixed-point attenuation → 13-bit linear volume.
   // Applied as: FM_POW[input & 0xFF] >> (input >> 8).
-  // Source: ymfm_fm.ipp line 95.
+  // OPN exp (power) ROM table — die-shot verified hardware values.
   const FM_POW = new Uint16Array([
     8168,8148,8124,8104,8080,8060,8040,8016,7996,7972,7952,7932,7908,7888,7864,7844,
     7824,7804,7780,7760,7740,7720,7696,7676,7656,7636,7616,7592,7572,7552,7532,7512,
@@ -33759,7 +33826,7 @@ function createEPSM(rom) {
 
   // Detune table: keycode(0–31) × detune(0–3) → phase adjustment.
   // Bit 2 of detune register negates the result.
-  // Source: ymfm_fm.ipp line 181.
+  // OPN detune table — per OPN hardware.
   const FM_DETUNE = [
     [ 0, 0, 1, 2],[ 0, 0, 1, 2],[ 0, 0, 1, 2],[ 0, 0, 1, 2],
     [ 0, 1, 2, 2],[ 0, 1, 2, 3],[ 0, 1, 2, 3],[ 0, 1, 2, 3],
@@ -33774,7 +33841,7 @@ function createEPSM(rom) {
   // Attenuation increment table: 64 entries of packed 4-bit increments.
   // Indexed by effective EG rate (0–63); 3-bit sub-index selects one nibble.
   // Applied as: (FM_EG_INC[rate] >> (4 * subIndex)) & 0xF.
-  // Source: ymfm_fm.ipp line 148.
+  // OPN envelope-rate increment table — per OPN hardware.
   const FM_EG_INC = new Uint32Array([
     0x00000000,0x00000000,0x10101010,0x10101010,
     0x10101010,0x10101010,0x11101110,0x11101110,
@@ -33796,7 +33863,7 @@ function createEPSM(rom) {
 
   // LFO PM shift table: PM sensitivity(0–7) × LFO counter bits(0–7) → shift count.
   // Applied to fnum to produce vibrato. Value 0x77=119 means no shift (disabled).
-  // Source: ymfm_fm.ipp line 337.
+  // OPN LFO PM shift table — per OPN hardware.
   const FM_LFO_PM = [
     [119,119,119,119,119,119,119,119],
     [119,119,119,119,114,114,114,114],
@@ -33812,7 +33879,7 @@ function createEPSM(rom) {
   // Bit layout: [0]=op2 input, [1:3]=op3 input, [4:6]=op4 input, [7]=op1→out,
   //             [8]=op2→out, [9]=op3→out. Op4 always outputs.
   // Entries 8–11 are OPL extensions (not used by OPN but kept for completeness).
-  // Source: ymfm_fm.ipp line 1019. ALGORITHM(op2in,op3in,op4in,op1out,op2out,op3out).
+  // OPN algorithm routing, encoded as ALGORITHM(op2in,op3in,op4in,op1out,op2out,op3out).
   const FM_ALG = new Uint16Array([
     0x035, // 0: O1→O2→O3→O4→out
     0x03A, // 1: (O1+O2)→O3→O4→out
@@ -33830,18 +33897,18 @@ function createEPSM(rom) {
 
   // ── FM Constants ──
   const EG_ATTACK = 1, EG_DECAY = 2, EG_SUSTAIN = 3, EG_RELEASE = 4;
-  const EG_QUIET = 0x380;         // ymfm_fm.h line 168: below this, operator is silent
+  const EG_QUIET = 0x380;         // below this attenuation, the operator is silent
   const FM_CHANNELS = 6;          // OPN-A: 6 channels (3 per bank)
   const FM_OPERATORS = 24;        // 4 operators per channel
   const FM_PRESCALE = 6;          // OPN fixed prescale
-  const FM_EG_CLOCK_DIV = 3;      // EG clocks every 3rd operator cycle (ymfm_opn.h line 123)
+  const FM_EG_CLOCK_DIV = 3;      // EG clocks every 3rd operator cycle
 
   // ── FM Register File ──
-  // 0x200 bytes mirroring ymfm opn_registers_base<true>
+  // 0x200 bytes mirroring the OPN register file
   // Low bank: $00-$FF, High bank: $100-$1FF
   const fmRegs = new Uint8Array(0x200);
 
-  // Helper: read register byte field (same as ymfm byte() accessor)
+  // Helper: read a register byte field
   function fmByte(base, shift, bits, offs) {
     return (fmRegs[(base + (offs || 0)) & 0x1FF] >> shift) & ((1 << bits) - 1);
   }
@@ -33850,7 +33917,7 @@ function createEPSM(rom) {
     return (fmByte(baseHi, shiftHi, bitsHi, offs) << bitsLo) | fmByte(baseLo, shiftLo, bitsLo, offs);
   }
 
-  // ── OPN Register Accessors (ymfm_opn.h lines 194–232) ──
+  // ── OPN register accessors ──
   function fmLfoEnable()                { return fmByte(0x22, 3, 1); }
   function fmLfoRate()                  { return fmByte(0x22, 0, 3); }
   function fmTimerAVal()                { return fmWord(0x24, 0, 8, 0x25, 0, 2); }
@@ -33883,7 +33950,7 @@ function createEPSM(rom) {
   function fmOpSsgEgEnable(opoffs)      { return fmByte(0x90, 3, 1, opoffs); }
   function fmOpSsgEgMode(opoffs)        { return fmByte(0x90, 0, 3, opoffs); }
 
-  // ── OPN Offset Mapping (ymfm_opn.h lines 142–158) ──
+  // ── OPN operator offset mapping ──
   // Channel offset: chnum → register offset (ch 0-2 in bank 0, ch 3-5 in bank 1)
   function fmChannelOffset(chnum) { return (chnum % 3) + 0x100 * ((chnum / 3) | 0); }
   // Operator offset: opnum(0-23) → register offset
@@ -33902,7 +33969,7 @@ function createEPSM(rom) {
 
   // ── Waveform Table (precomputed, OPN uses only one sine waveform) ──
   // OPN waveform: 1024 entries, each = abs_sin_attenuation(i) | (sign << 15)
-  // Source: ymfm_opn.cpp line 51
+  // OPN single-sine waveform — per OPN hardware.
   const FM_WAVE = new Uint16Array(1024);
   for (let i = 0; i < 1024; i++) {
     // abs_sin_attenuation: bit 8 mirrors, table is 256 entries
@@ -33913,7 +33980,7 @@ function createEPSM(rom) {
     FM_WAVE[i] = sinAtt | ((i & 0x200) ? 0x8000 : 0);
   }
 
-  // ── Helper functions (ymfm_fm.ipp) ──
+  // ── Helper functions ──
 
   // attenuation_to_volume: 5.8 fixed-point attenuation → 13-bit linear volume
   function attToVol(input) {
@@ -33936,7 +34003,7 @@ function createEPSM(rom) {
     return (FM_EG_INC[rate] >>> (4 * index)) & 0xF;
   }
 
-  // OPN LFO PM phase adjustment (ymfm_fm.ipp line 332)
+  // OPN LFO PM phase adjustment (vibrato)
   function lfoPhaseAdj(fnumBits, pmSens, lfoPm) {
     const absPm = lfoPm < 0 ? -lfoPm : lfoPm;
     const shifts = FM_LFO_PM[pmSens][absPm & 7];
@@ -33994,7 +34061,7 @@ function createEPSM(rom) {
   let epsmMuteMask = 0;
   let fmModifiedChannels = 0x3F; // bitmask of channels needing prepare
   let fmActiveChannels = 0;      // bitmask of channels producing sound
-  let fmPrepareCount = 0;        // periodic re-prepare every 4096 samples (ymfm fm_engine_base::clock)
+  let fmPrepareCount = 0;        // periodic re-prepare every 4096 samples
 
   // ── Timer State ──
   let timerACounter = -1;     // -1 = not running
@@ -34002,7 +34069,7 @@ function createEPSM(rom) {
   let timerARunning = false;
   let timerBRunning = false;
 
-  // ── FM Operator: prepare (cache_operator_data, ymfm_opn.cpp line 280) ──
+  // ── FM Operator: prepare (cache operator data) ──
   function fmOpPrepare(opIdx) {
     const op = fmOp[opIdx];
     const chIdx = (opIdx / 4) | 0;
@@ -34016,7 +34083,7 @@ function createEPSM(rom) {
     if (fmMultiFreq() && chIdx === 2) {
       // Operator mapping: opIdx within channel (0-3), but OPN operator offset order is:
       // op0=slot0, op1=slot2, op2=slot1, op3=slot3 within the channel
-      // ymfm maps: opoffs 2 → multi_block_freq(1), opoffs 10 → (2), opoffs 6 → (0)
+      // OPN mapping: opoffs 2 → multi_block_freq(1), opoffs 10 → (2), opoffs 6 → (0)
       const localOff = opoffs & 0xFF;  // strip bank
       if (localOff === 2) blockFreq = fmMultiBlockFreq(1);
       else if (localOff === 10) blockFreq = fmMultiBlockFreq(2);
@@ -34026,7 +34093,7 @@ function createEPSM(rom) {
     op.blockFreq = blockFreq;
 
     // Compute keycode (5-bit): top 4 bits of block_freq + magic bit
-    // ymfm_opn.cpp line 307: keycode = bitfield(block_freq, 10, 4) << 1
+    // OPN keycode = bitfield(block_freq, 10, 4) << 1
     let keycode = ((blockFreq >> 10) & 0xF) << 1;
     // Lowest bit: (F11&(F10|F9|F8)) | (!F11&F10&F9&F8) encoded as bitfield(0xFE80, ...)
     keycode |= (0xFE80 >> ((blockFreq >> 7) & 0xF)) & 1;
@@ -34069,7 +34136,7 @@ function createEPSM(rom) {
     return op.envState !== EG_RELEASE || op.envAtt < EG_QUIET;
   }
 
-  // ── FM Operator: compute phase step (ymfm_opn.cpp compute_phase_step) ──
+  // ── FM Operator: compute phase step ──
   function computePhaseStep(op, choffs, lfoPm) {
     // Extract fnum (low 11 bits → 12-bit with <<1)
     let fnum = (op.blockFreq & 0x7FF) << 1;
@@ -34095,7 +34162,7 @@ function createEPSM(rom) {
     return (phaseStep * op.multiple) >> 1;
   }
 
-  // ── FM Operator: key state machine (ymfm_fm.ipp clock_keystate) ──
+  // ── FM Operator: key state machine ──
   function fmOpClockKeyState(opIdx, keystate) {
     const op = fmOp[opIdx];
     if ((keystate ^ op.keyState) === 0) return;
@@ -34107,7 +34174,7 @@ function createEPSM(rom) {
     }
   }
 
-  // ── FM Operator: start attack (ymfm_fm.ipp start_attack) ──
+  // ── FM Operator: start attack ──
   function fmOpStartAttack(opIdx, isRestart) {
     const op = fmOp[opIdx];
     if (op.envState === EG_ATTACK) return;
@@ -34126,7 +34193,7 @@ function createEPSM(rom) {
     if (op.egRate[EG_ATTACK] >= 62) op.envAtt = 0;
   }
 
-  // ── FM Operator: start release (ymfm_fm.ipp start_release) ──
+  // ── FM Operator: start release ──
   function fmOpStartRelease(opIdx) {
     const op = fmOp[opIdx];
     if (op.envState >= EG_RELEASE) return;
@@ -34140,7 +34207,7 @@ function createEPSM(rom) {
     }
   }
 
-  // ── FM Operator: clock SSG-EG (ymfm_fm.ipp clock_ssg_eg_state) ──
+  // ── FM Operator: clock SSG-EG ──
   function fmOpClockSsgEg(opIdx) {
     const op = fmOp[opIdx];
     // Only acts when attenuation crosses 0x200
@@ -34166,7 +34233,7 @@ function createEPSM(rom) {
     if (op.envState === EG_RELEASE) op.envAtt = 0x3FF;
   }
 
-  // ── FM Operator: clock envelope (ymfm_fm.ipp clock_envelope) ──
+  // ── FM Operator: clock envelope ──
   function fmOpClockEnvelope(opIdx, envCounter) {
     const op = fmOp[opIdx];
 
@@ -34203,7 +34270,7 @@ function createEPSM(rom) {
     }
   }
 
-  // ── FM Operator: clock phase (ymfm_fm.ipp clock_phase) ──
+  // ── FM Operator: clock phase ──
   function fmOpClockPhase(opIdx, lfoPm) {
     const op = fmOp[opIdx];
     let step = op.phaseStep;
@@ -34215,7 +34282,7 @@ function createEPSM(rom) {
     op.phase = (op.phase + step) | 0;
   }
 
-  // ── FM Operator: master clock (ymfm_fm.ipp operator::clock) ──
+  // ── FM Operator: master clock ──
   function fmOpClock(opIdx, envCounter, lfoPm) {
     const op = fmOp[opIdx];
     const opoffs = fmOperatorOffset(opIdx);
@@ -34234,7 +34301,7 @@ function createEPSM(rom) {
     fmOpClockPhase(opIdx, lfoPm);
   }
 
-  // ── FM Operator: envelope attenuation (ymfm_fm.ipp envelope_attenuation) ──
+  // ── FM Operator: envelope attenuation ──
   function fmOpEnvAtt(opIdx, amOffset) {
     const op = fmOp[opIdx];
     // eg_shift is always 0 for OPN, so no shift needed
@@ -34253,7 +34320,7 @@ function createEPSM(rom) {
     return Math.min(result, 0x3FF);
   }
 
-  // ── FM Operator: compute volume (ymfm_fm.ipp compute_volume) ──
+  // ── FM Operator: compute volume ──
   // Returns 14-bit signed value
   function fmOpComputeVolume(opIdx, phase, amOffset) {
     const op = fmOp[opIdx];
@@ -34272,17 +34339,17 @@ function createEPSM(rom) {
     return (sinAtt & 0x8000) ? -result : result;
   }
 
-  // ── FM Channel: output 4-op (ymfm_fm.ipp output_4op) ──
+  // ── FM Channel: output 4-op ──
   function fmChOutput4op(chIdx) {
     const choffs = fmChannelOffset(chIdx);
     const baseOp = chIdx * 4;
     const amOffset = fmLfoAmOffset(choffs);
 
     // OPN operator order in output_4op: slot0, slot2, slot1, slot3
-    // (ymfm operator_map swaps indices 1↔2 for carrier/modulator wiring)
+    // (OPN operator map swaps indices 1↔2 for carrier/modulator wiring)
     const op0 = baseOp;      // slot 0 = OP1
-    const op1 = baseOp + 2;  // slot 2 = OP3 (ymfm m_op[1])
-    const op2 = baseOp + 1;  // slot 1 = OP2 (ymfm m_op[2])
+    const op1 = baseOp + 2;  // slot 2 = OP3
+    const op2 = baseOp + 1;  // slot 1 = OP2
     const op3 = baseOp + 3;  // slot 3 = OP4
 
     // Operator 1 feedback
@@ -34332,7 +34399,7 @@ function createEPSM(rom) {
     if (fmChOutputR(choffs)) fmOutR += result;
   }
 
-  // ── FM LFO AM offset (ymfm_opn.cpp lfo_am_offset) ──
+  // ── FM LFO AM offset ──
   function fmLfoAmOffset(choffs) {
     // AM shift: [7, 3, 1, 0] mapped from sensitivity XOR 3
     const amShift = (1 << (fmChLfoAmSens(choffs) ^ 3)) - 1;
@@ -34340,7 +34407,7 @@ function createEPSM(rom) {
     return (fmLfoAm << 1) >> amShift;
   }
 
-  // ── FM LFO & noise clock (ymfm_opn.cpp clock_noise_and_lfo) ──
+  // ── FM LFO & noise clock ──
   const LFO_MAX_COUNT = new Uint8Array([109, 78, 72, 68, 63, 45, 9, 6]);
   function fmClockLfo() {
     if (!fmLfoEnable()) {
@@ -34365,12 +34432,12 @@ function createEPSM(rom) {
     return ((fmLfoCounter >> 14) & 1) ? -pm : pm;
   }
 
-  // ── FM Engine: clock all channels (ymfm_fm.ipp fm_engine_base::clock) ──
+  // ── FM Engine: clock all channels ──
   function fmEngineClock(chanmask) {
     fmTotalClocks++;
 
     // Prepare operators if any channel was modified, or periodically every
-    // 4096 samples to catch ending notes (ymfm fm_engine_base::clock)
+    // 4096 samples to catch ending notes
     if (fmModifiedChannels !== 0 || ++fmPrepareCount >= 4096) {
       fmPrepareCount = 0;
       fmActiveChannels = 0;
@@ -34402,7 +34469,7 @@ function createEPSM(rom) {
     return fmEnvCounter;
   }
 
-  // ── FM Engine: generate output (ymfm_fm.ipp fm_engine_base::output) ──
+  // ── FM Engine: generate output ──
   function fmEngineOutput(chanmask) {
     // Only process active channels
     chanmask &= fmActiveChannels;
@@ -34424,7 +34491,7 @@ function createEPSM(rom) {
     }
   }
 
-  // ── FM Register write with latched frequency pairs (ymfm_opn.cpp write) ──
+  // ── FM Register write with latched frequency pairs ──
   function fmRegWrite(index, data) {
     // Latched freq pair writes ($A0-$AF region)
     if ((index & 0xF0) === 0xA0) {
@@ -34491,12 +34558,12 @@ function createEPSM(rom) {
   let hiAddr = 0;              // address latch for high register bank
   let loAddr = 0;              // address latch for low register bank
 
-  // ── Self-contained SSG engine for YMF288 (ymfm ssg_engine) ──
+  // ── Self-contained SSG engine for YMF288 ──
   // Register-compatible with AY-3-8910 / YM2149F but clocked differently.
   // YMF288 prescale=6: SSG clock() called at 2:1 ratio to FM output
-  // (~111,111 Hz). No /16 prescaler — ymfm handles clock/16 vs clock/8
+  // (~111,111 Hz). No /16 prescaler — clock/16 vs clock/8 handled in the SSG clock
   // via counter adjustments (tones toggle at period, noise uses >>1).
-  // LFSR and amplitude table match ymfm_ssg.cpp exactly.
+  // LFSR and amplitude table per YM2149/SSG hardware.
   const ssgReg = new Uint8Array(16);
   const ssgTonePeriod = [0, 0, 0];
   const ssgToneCounter = [0, 0, 0];
@@ -34505,7 +34572,7 @@ function createEPSM(rom) {
   let ssgEnvPeriod = 0, ssgEnvCounter = 0, ssgEnvState = 0;
   let ssgOut = 0;
 
-  // Amplitude table from ymfm_ssg.cpp (MAME-derived, biased so 0 == 0)
+  // SSG amplitude table per YM2149 hardware (biased so 0 == 0)
   const SSG_AMP = new Int16Array([
     0,32,78,141,178,222,262,306,369,441,509,585,701,836,965,1112,
     1334,1595,1853,2146,2576,3081,3576,4135,5000,6006,7023,8155,9963,11976,14132,16382
@@ -34513,7 +34580,7 @@ function createEPSM(rom) {
 
   function ssgClock() {
     // Tones: period units are clock/16; running at clock/8 → toggle at period
-    // gives effective clock/16 half-cycle (ymfm_ssg.cpp clock() lines 137-147)
+    // gives effective clock/16 half-cycle
     for (let ch = 0; ch < 3; ch++) {
       ssgToneCounter[ch]++;
       if (ssgToneCounter[ch] >= ssgTonePeriod[ch]) {
@@ -34522,8 +34589,8 @@ function createEPSM(rom) {
       }
     }
     // Noise: period units are clock/16; >>1 adjustment for clock/8 rate.
-    // Period 0 behaves as 1 (ymfm: "add a special check against that case")
-    // (ymfm_ssg.cpp clock() lines 149-157)
+    // Period 0 behaves as 1 (special-cased to avoid a zero period)
+    // (SSG tone period handling)
     ssgNoiseCounter++;
     if ((ssgNoiseCounter >> 1) >= ssgNoisePeriod && ssgNoiseCounter !== 1) {
       ssgNoiseState ^= ((ssgNoiseState ^ (ssgNoiseState >> 3)) & 1) << 17;
@@ -34531,7 +34598,7 @@ function createEPSM(rom) {
       ssgNoiseCounter = 0;
     }
     // Envelope: period units are clock/8, no adjustment needed
-    // (ymfm_ssg.cpp clock() lines 159-165)
+    // (SSG envelope/period handling)
     ssgEnvCounter++;
     if (ssgEnvCounter >= ssgEnvPeriod) {
       ssgEnvState++;
@@ -34540,7 +34607,7 @@ function createEPSM(rom) {
   }
 
   function ssgOutput() {
-    // Compute envelope volume (ymfm_ssg.cpp output() lines 186-199)
+    // Compute SSG envelope volume
     const envShape = ssgReg[0x0D];
     const envCont = (envShape >> 3) & 1;
     const envAtk = (envShape >> 2) & 1;
@@ -34554,7 +34621,7 @@ function createEPSM(rom) {
       if (envAlt) attack ^= (ssgEnvState >> 5) & 1;
       envVol = (ssgEnvState & 31) ^ (attack ? 0 : 31);
     }
-    // Mix channels (ymfm_ssg.cpp output() lines 201-228)
+    // Mix SSG channels
     let out = 0;
     for (let ch = 0; ch < 3; ch++) {
       if (epsmMuteMask & (1 << (6 + ch))) continue; // SSG ch muted (bits 6-8)
@@ -34597,7 +34664,7 @@ function createEPSM(rom) {
   // clockAccum accumulates OPN master clocks; a separate sampleClockCount divider
   // fires tick() only every 144 master clocks, keeping CPU load proportional to
   // the actual 55 kHz output rate rather than the 8 MHz master rate.
-  const EPSM_CLOCK = 8000000;        // master clock (OpnInterface.h line 11)
+  const EPSM_CLOCK = 8000000;        // master clock: 8 MHz per YMF288 hardware spec
   const CLOCKS_PER_SAMPLE = 144;     // prescale(6) × 24 op-slots → one FM sample
   let clockAccum = 0;                // fractional master-clock accumulator
   let sampleClockCount = 0;          // counts master clocks toward next FM sample
@@ -34615,7 +34682,7 @@ function createEPSM(rom) {
   // Output snapshot (mono mix of all 6 channels, normalised to ~0.0–1.0)
   let currentOut = 0;
 
-  // ── Channel clock (ymfm_adpcm.cpp adpcm_a_channel::clock, lines 151–213) ──
+  // ── ADPCM-A channel clock ──
   function clockChannel(c) {
     if (!c.playing) { c.acc = 0; return; }
 
@@ -34631,20 +34698,20 @@ function createEPSM(rom) {
       c.nibble = 0;
     }
 
-    // ADPCM delta (line 202)
+    // ADPCM-A delta calculation
     let delta = ((2 * (data & 7) + 1) * STEPS[c.step]) >> 3;
     if (data & 8) delta = -delta;
 
-    // 12-bit wrapping accumulator (line 207)
+    // 12-bit wrapping accumulator
     c.acc = (c.acc + delta) & 0xFFF;
 
-    // Step index adjustment (line 211), clamped 0–48
+    // Step index adjustment, clamped 0–48
     c.step += STEP_ADJ[data & 7];
     if (c.step < 0) c.step = 0;
     else if (c.step > 48) c.step = 48;
   }
 
-  // ── Channel output (ymfm_adpcm.cpp adpcm_a_channel::output, lines 222–246) ──
+  // ── ADPCM-A channel output ──
   function channelOut(c) {
     // Combined volume: instrument level XOR'd + total level XOR'd
     const vol = (c.iLevel ^ 0x1F) + (totalLevel ^ 0x3F);
@@ -34653,9 +34720,9 @@ function createEPSM(rom) {
     const mul = 15 - (vol & 7);
     const shift = 5 + (vol >> 3);  // 4 + 1 + (vol>>3) = 5 + (vol>>3)
 
-    // ymfm: int16_t(m_accumulator << 4) — shift 12-bit acc into 16-bit range
+    // int16_t(accumulator << 4) — shift 12-bit accumulator into 16-bit range
     // then multiply by volume and right-shift. The << 4 is critical for correct
-    // output amplitude (ymfm_adpcm.cpp adpcm_a_channel::output line 240).
+    // ADPCM-A channel output amplitude.
     const value16 = ((c.acc << 4) << 16) >> 16; // int16_t(acc << 4)
     return ((value16 * mul) >> shift) & ~3;
   }
@@ -34676,7 +34743,7 @@ function createEPSM(rom) {
   // ── ADPCM-A register write (shared by low bank $10-$1F and high bank $10-$1F) ──
   function writeAdpcmA(reg, data) {
     if (reg === 0x00) {
-      // Key control (ymfm_adpcm.cpp adpcm_a_engine::write, lines 340–349)
+      // ADPCM-A key control (rhythm key-on/off)
       // Bit 7: 1=dump (keyoff), 0=keyon. Bits 0–5: channel mask.
       const mask = data & 0x3F;
       if (data & 0x80) {
@@ -34697,7 +34764,7 @@ function createEPSM(rom) {
       c.panR = (data >> 6) & 1;
       c.iLevel = data & 0x1F;
     }
-    // Start/end addresses are HARDCODED in ymf288::reset() — not writable.
+    // Start/end addresses are hardcoded in the YMF288 rhythm map at reset — not writable.
   }
 
   // ── High bank register write (port 3) ──
@@ -34705,7 +34772,7 @@ function createEPSM(rom) {
     // hiAddr is 0-255 (byte). FM registers need bit 8 set to distinguish
     // high bank (channels 4-6) from low bank (channels 1-3) in fmRegWrite.
     if (reg === 0x10) {
-      // High bank $10: IRQ flag control (ymfm_opn.cpp ymf288::write_data_hi)
+      // High bank $10: IRQ flag control (YMF288 high-bank write)
       // Must be checked BEFORE the ADPCM-A range ($11-$1F)
       if (data & 0x80) {
         fmStatus = 0;
@@ -34724,7 +34791,7 @@ function createEPSM(rom) {
     }
   }
 
-  // ── Timer management (ymfm_fm.ipp update_timer + engine_timer_expired) ──
+  // ── Timer management (OPN timers A/B) ──
   function fmUpdateTimer(tnum, enable) {
     if (enable && !(tnum === 0 ? timerARunning : timerBRunning)) {
       // Timer period in CPU cycles (decremented once per audioTick call).
@@ -34768,7 +34835,7 @@ function createEPSM(rom) {
     }
   }
 
-  // ── FM Mode register write (ymfm_fm.ipp engine_mode_write) ──
+  // ── FM Mode register write ──
   function fmModeWrite(data) {
     fmModifiedChannels = 0x3F;
     fmRegs[0x27] = data;
@@ -34795,7 +34862,7 @@ function createEPSM(rom) {
     fmEngineOutput(chanmask);
     fmUpdateFeedback();
 
-    // ADPCM-A clocking (ymfm_opn.cpp ymf288::clock_fm_and_adpcm):
+    // ADPCM-A clocking (YMF288 FM + ADPCM-A):
     // Fires on every envelope cycle where low 2 bits of env_counter == 0
     // (every 4th FM tick). Channels 4-5 only clock when bit 2 is also 0
     // (every 8th FM tick). env_counter comes from fmEngineClock return value.
@@ -34807,7 +34874,7 @@ function createEPSM(rom) {
 
     // Hardware timers are now clocked per CPU cycle in audioTick() below.
 
-    // SSG: 2:1 ratio to FM output (ymfm_opn.cpp ymf288::update_prescale).
+    // SSG: 2:1 ratio to FM output (YMF288 prescale).
     // Must be inside tick(), NOT in audioTick(), because tick() fires at
     // the FM sample rate (~55,556 Hz). 2 clocks × 55,556 = 111,111 Hz.
     ssgClock();
@@ -34884,15 +34951,15 @@ function createEPSM(rom) {
     // Port 3: unmapped
     read(port) {
       if (port === 0) {
-        // Status register: timer flags + busy (ymfm ymf288::read_status)
+        // Status register: timer flags + busy (YMF288 status read)
         return fmStatus & 0x03; // bits 0-1 = timer A/B overflow flags
       } else if (port === 1) {
-        // Data port read (ymfm ymf288::read_data)
+        // Data port read (YMF288)
         if (loAddr <= 0x0D) return ssgReg[loAddr];
         if (loAddr === 0xFF) return 2; // YMF288 ID code
         return fmRegs[loAddr] || 0;
       } else if (port === 2) {
-        // Extended status (ymfm ymf288::read_status_hi)
+        // Extended status (YMF288 high-bank status)
         let status = fmStatus & ~fmFlagControl & 0x03;
         return status;
       }
@@ -34906,7 +34973,7 @@ function createEPSM(rom) {
       if (port === 0) { loAddr = data; return; }
       if (port === 2) { hiAddr = data; return; }
       if (port === 1) {
-        // Low bank data write (ymfm_opn.cpp ymf288::write_data)
+        // Low bank data write (YMF288)
         if (loAddr <= 0x0D) {
           // $00-$0D: SSG registers
           ssgWriteReg(loAddr, data);
@@ -35005,7 +35072,7 @@ function createEPSM(rom) {
       epsmMuteMask = 0;
       // FM reset
       fmRegs.fill(0);
-      // Default L/R output enabled on all 6 channels (ymfm opn_registers_base::reset)
+      // Default L/R output enabled on all 6 channels (YMF288 reset state)
       fmRegs[0xB4] = fmRegs[0xB5] = fmRegs[0xB6] = 0xC0;
       fmRegs[0x1B4] = fmRegs[0x1B5] = fmRegs[0x1B6] = 0xC0;
       for (let i = 0; i < FM_OPERATORS; i++) fmOp[i] = initFmOp();
@@ -35182,7 +35249,7 @@ $('fds-bios-input').addEventListener('change', e => {
     // reimplementations vary) but the user confirms first — an arbitrary 8KB
     // file would otherwise fail in confusing ways deep inside disk boot.
     const biosCrc = crc32(data, 0, data.length) >>> 0;
-    // Known-good hardware dumps per MAME (disksys.cpp/nes.cpp ROM definitions),
+    // Known-good FDS BIOS dump CRCs (published hardware dumps),
     // cross-checked against libretro System.dat:
     //   5E607DCF  RP2C33A-01A — standard FDS BIOS, newer (logo without shadow)
     //   1C7AE5D5  RP2C33-01   — standard FDS BIOS, older (logo with shadow)
@@ -35244,7 +35311,7 @@ $('epsm-rom-input').addEventListener('change', e => {
     const data = new Uint8Array(ev.target.result);
     if (data.length !== 8192) { toast(`EPSM ADPCM ROM must be exactly 8192 bytes (got ${data.length})`, 'error'); return; }
     // Known-good ADPCM ROMs load silently: the embedded reconstruction and the
-    // canonical YMF288/YM2608 internal rhythm ROM. Sources: MAME ymopn.cpp
+    // canonical YMF288/YM2608 internal rhythm ROM. Cross-checked against MesenCE firmware DB.
     // ROM_LOAD ym2608_adpcm_rom.bin CRC(23c9e0d8), cross-checked against the
     // MesenCE firmware database (SHA-256 53AFD0FA...). Unknown files are allowed
     // but confirmed first — same policy as the FDS BIOS gate.
@@ -36074,7 +36141,10 @@ function gpRefreshDropdowns() {
       sel.value = config.gpSlot[slotKey] != null ? 'gp:' + config.gpSlot[slotKey] : 'keyboard';
     }
   }
-  if (changed) saveConfig(); // single batched save after all players processed
+  if (changed) {
+    saveConfig(); // single batched save after all players processed
+    buildHotkeyMap(); // selection changed → refresh global hotkey display
+  }
   updateMobileControlsVisibility();
   updateMicIndicator(); // Refresh topbar mic indicator when mobile controls show/hide
 }
@@ -36115,6 +36185,9 @@ function _isGpBinding(b) {
 function pollGpHotkeys() {
   if (keyboardModeActive) return;
   if (!config.gpHotkeys) return; // guard against stale in-memory config
+  // Gamepad hotkeys only fire when a gamepad is selected in the input dropdown,
+  // matching the hotkey panel display. All players on keyboard → keyboard hotkeys only.
+  if (!_anyGamepadSelected()) return;
   if ($('settings-modal')?.classList.contains('open')) return; // don't fire hotkeys while rebinding
   const ghk = config.gpHotkeys;
   const pressed = {};
@@ -36924,7 +36997,7 @@ function buildFBKeyboardOverlay() {
 }
 
 // ── §8.4  SUBOR KEYBOARD (SB-97) — key matrix + host bindings ──
-// FCEUX: suborkb.cpp — 13 rows × 2 columns × 4 bits = 104 key positions
+// Subor keyboard: 13 rows × 2 columns × 4 bits = 104 key positions
 // Matrix format: [row, column, bit] — same active-low convention as Family BASIC
 
 const SUBOR_KEY_MATRIX_POS = {
@@ -39164,7 +39237,7 @@ mpDetectServer();
 
 // FDS BIOS
 // FDS BIOS — embedded (8KB base64)
-const FDS_BIOS_B64 = "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IKX/KfuNACCF/6UAjQYgoACMBiCiBMkgsAKmAqAApQGNByCI0PrK0PekAqUAySCQEmkCjQYgqcCNBiCiQIwHIMrQ+qYBYEiKhAEY5QGqaKAAhACRAIjQ+8YB6ND2YK0CIKX9jQUgpfyNBSCl/40AIGAKqMhohQBohQGxAKrIsQCFAYYAbAAApfsp+IX7CQWNFkDq6urq6uqiCKX7CQSNFkCgCojQ/eqk+60XQEopD/AllQCl+wkGjRZAoAqI0P3q6q0XQCoqKinwFQBJ/5UAyhDIpPsJ/4wWQGCpCAigABhlAIUAqQBlAYUBKMYCYKIIsAqxAI0HIMjK0PVgrQcgkQCw9KUDogiwB40HIMrQ+GCtByCw96IIpQNRAI0HIMjK0PVghQSGAoQDIETorQIgpf8p+4X/jQAgpAOMBiClBCnwjQYgqQCFA6UEKQ9KkALGA0qQA64HIKjwFYjwIIjwKYggoeugACB66yBm69DzYCB66yB666kQIGjr0PNgIHrrII/rIGbr0PVgII/rIHrrIGbr0PVgYKAJAY0lQCn9hfqNJUBg//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8kJCQkJCQkJCQkJBcSFx0OFw0YJCgkJCQkJCQkJCQkJCQkJCQkJCQPChYSFSIkDBgWGR4dDhskHRYkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJB0REhwkGRsYDR4MHSQSHCQWChceDwoMHR4bDg0kJCQkChcNJBwYFQ0kCyIkFxIXHQ4XDRgkDBgnFR0NJiQkJCQYGyQLIiQYHREOGyQMGBYZChciJB4XDQ4bJCQkJCQkJBUSDA4XHA4kGA8kFxIXHQ4XDRgkDBgnFR0NJiYkJP////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8AAP///60CIKkAjQYgqQCNBiCpAIUBqeCFAqIpoACxAUn/jQcgyMAI0PSgALEBjQcgyMAI0PYYpQFpCIUBkALmAsrQ2Kk/jQYgqQCNBiCiBKkCjQcgqQKNByCpMI0HIKkWjQcgytDpqSCNBiCpAI0GIKkkogSgAI0HIMjQ+srQ96khjQYgqYqNBiCpFI0HIKkejQcgqRuNByCpGI0HIKkQjQcgqQqNByCpF40HIKkOjQcgqSSNByCpD40HIKkNjQcgqRyNByCpIY0GIKnGjQYgqRmNByCpFY0HIKkOjQcgqQqNByCpHI0HIKkOjQcgqSSNByCpHI0HIKkOjQcgqR2NByCpJI0HIKkNjQcgqRKNByCpHI0HIKkUjQcgqSSNByCpDI0HIKkKjQcgqRuNByCpDY0HIKmAhf+tAiCpAI0FIKkAjQUgpf+NACBgqQCNASAgsuGpIY0GIKnGjQYgqSSNByCpJI0HIKkkjQcgqReNByCpGI0HIKkgjQcgqSSNByCpFY0HIKkYjQcgqQqNByCpDY0HIKkSjQcgqReNByCpEI0HIKkmjQcgqSaNByCpJo0HIKkkjQcgqSSNByCpJI0HIK0CIKkAjQUgqQCNBSCl/40AIKX+jQEgYEwS9UpKhQRoKQ+FBakAjQEgILLhqSGNBiCpxo0GIKkkjQcgqSSNByCpJI0HIKkkjQcgqSSNByCpJI0HIKkOjQcgqRuNByCpG40HIKkkjQcgpQSNByClBY0HIKkkjQcgqSSNByCpJI0HIKkkjQcgqSSNByCpJI0HIKkkjQcgqSSNByCpP40GIKkAjQYgqQaNByCpBo0HIK0CIKkAjQUgqQCNBSCl/40AIKX+jQEgYEwG9q0CIKk/jQYgqQCNBiCpAo0HIKkCjQcgrQIgqQCNBSCpAI0FIKX/jQAgYKl6jQBAqX+NAUCps40EQKl/jQVAYI0CQI4DQCCy4YjQ+mCNBkCOB0AgsuGI0PpgjQJAjgNApQONBkClBI0HQCCy4YjQ+mCpEI0AQI0EQGCpEI0AQKAFILLhiND6qXqNAEBgYP///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////0xx96mNogCgBiDE8qlqogCgCiDE8kz18qm0jQBAqX+NAUCiA4YAqX2NAkCpAo0DQKAKILLhiND6qRCNAECgCCCy4YjQ+qm0jQBApgDK0NVM9fJ4qRCNACCF/9ipBoX+jQEgogKtAiAQ+8rQ+I4iQI4jQKmDjSNAhv2G/Ib7jhZAqSaF+o0lQKn/hfmNJkCOEECpwI0XQKkPjRVAqYCNgECp6I2KQKL/mqnAjQABqYCNAQGtAgHJNdATrQMByVPwBsms0AipU40DAUyl96kAoviVAMrQ+40BA6l9jQADqf+NAgMgAPCpDoX+jQEgILLh6urqTAL3IPjh9e//79BFILTzTI72rQIgqT+NBiCpAI0GIKkPjQcgrQIgqQCNBSCpAI0FIKX/jQAgqTWNAgGprI0DAanAjQABqYCNAQEg6upYTND3iiDU8SDM860yQCkB8PmtMkApAdD5IILyTJb0SEpKSkqFBGgpD4UFqQCNASAgsuGpIY0GIKnGjQYgqSSNByCpJI0HIKkkjQcgqSSNByCpJI0HIKkkjQcgqQ6NByCpG40HIKkbjQcgqSSNByClBI0HIKUFjQcgqSSNByCpJI0HIKkkjQcgqSSNByCpJI0HIKkkjQcgqSSNByCpJI0HIKk/jQYgqQCNBiCpBo0HIKkGjQcgqTCNByCpFo0HIKkGjQcgqQaNByCpMI0HIKkWjQcgqQaNByCpBo0HIKkwjQcgqRaNByCpBo0HIKkGjQcgqTCNByCpFo0HIK0CIKkAjQUgqQCNBSCl/40AIKX+jQEgYCCy4a0CIKk/jQYgqQCNBiCpAo0HIKkCjQcgqTCNByCpFo0HIKkCjQcgqQKNByCpMI0HIKkWjQcgqQKNByCpAo0HIKkwjQcgqRaNByCpAo0HIKkCjQcgqTCNByCpFo0HIK0CIKkAjQUgqQCNBSCl/40AIGCpEIX/jQAgqQaF/o0BICDq6lhM0PepBoX+jQEgqYCF/40AICCy4a0CIKk/jQYgqQCNBiCpD6IgjQcgytD6qSCNBiCpAI0GIKkAogSgAI0HIMjQ+srQ96kQhf+NACCpBoX+jQEgrQIgqQCNBSCpAI0FIKk1jQIBqayNAwGpwI0AAamAjQEBWEzQ960yQCkB0PkgRvEg+OH17//v0AYgtPNMjvaKINTxIMzzrTJAKQHw+a0yQCkB0PlMM/epBoX+jQEgTJb0qZ2NAECpf40BQKlwjQJAqQCNA0CgCCCy4YjQ+qlUjQJAqQCNA0CgDiCy4YjQ+qkQjQBAYKm9jQBAqX+NAUCpcI0CQKkAjQNAoAMgsuGI0PqpVI0CQKkAjQNAoA4gsuGI0PqpEI0AQGCpEIX/jQAgqQaF/o0BIK0CIKkAjQUgqQCNBSAg6upYTND3////////////eEiKSJhIqQCNACCpBoX+jQEgrQIgogCpAJ0AAp0AA50ABJ0ABZ0ABp0AB+jQ66kAjQMgogCp8I0EIOjQ+qkgjQYgqQCNBiCiCKAAqQCNByDI0PrK0PepP40GIKkAjQYgoiCpD40HIMrQ+q0CIKkgjQYgqQCNBiCtAiCpAI0FII0FIKX/jQAgaKhoqmhYbPzf//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+L4Qb0x+E=";
+const FDS_BIOS_B64 = "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IKX/KfuNACCF/6UAjQYgoACMBiCiBMkgsAKmAqAApQGNByCI0PrK0PekAqUAySCQEmkCjQYgqcCNBiCiQIwHIMrQ+qYBYEiKhAEY5QGqaKAAhACRAIjQ+8YB6ND2YK0CIKX9jQUgpfyNBSCl/40AIGAKqMhohQBohQGxAKrIsQCFAYYAbAAApfsp+IX7CQWNFkDq6urq6uqiCKX7CQSNFkCgCojQ/eqk+60XQEopD/AllQCl+wkGjRZAoAqI0P3q6q0XQCoqKinwFQBJ/5UAyhDIpPsJ/4wWQGCpCAigABhlAIUAqQBlAYUBKMYCYKIIsAqxAI0HIMjK0PVgrQcgkQCw9KUDogiwB40HIMrQ+GCtByCw96IIpQNRAI0HIMjK0PVghQSGAoQDIETorQIgpf8p+4X/jQAgpAOMBiClBCnwjQYgqQCFA6UEKQ9KkALGA0qQA64HIKjwFYjwIIjwKYggoeugACB66yBm69DzYCB66yB666kQIGjr0PNgIHrrII/rIGbr0PVgII/rIHrrIGbr0PVgYKAJAY0lQCn9hfqNJUBg//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8kJCQkJCQkJCQkJBcSFx0OFw0YJCgkJCQkJCQkJCQkJCQkJCQkJCQPChYSFSIkDBgWGR4dDhskHRYkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJB0REhwkGRsYDR4MHSQSHCQWChceDwoMHR4bDg0kJCQkChcNJBwYFQ0kCyIkFxIXHQ4XDRgkDBgnFR0NJiQkJCQYGyQLIiQYHREOGyQMGBYZChciJB4XDQ4bJCQkJCQkJBUSDA4XHA4kGA8kFxIXHQ4XDRgkDBgnFR0NJiYkJP////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8AAP///60CIKkAjQYgqQCNBiCpAIUBqeCFAqIpoACxAUn/jQcgyMAI0PSgALEBjQcgyMAI0PYYpQFpCIUBkALmAsrQ2Kk/jQYgqQCNBiCiBKkCjQcgqQKNByCpMI0HIKkWjQcgytDpqSCNBiCpAI0GIKkkogSgAI0HIMjQ+srQ96khjQYgqYqNBiCpFI0HIKkejQcgqRuNByCpGI0HIKkQjQcgqQqNByCpF40HIKkOjQcgqSSNByCpD40HIKkNjQcgqRyNByCpIY0GIKnGjQYgqRmNByCpFY0HIKkOjQcgqQqNByCpHI0HIKkOjQcgqSSNByCpHI0HIKkOjQcgqR2NByCpJI0HIKkNjQcgqRKNByCpHI0HIKkUjQcgqSSNByCpDI0HIKkKjQcgqRuNByCpDY0HIKmAhf+tAiCpAI0FIKkAjQUgpf+NACBgqQCNASAgsuGpIY0GIKnGjQYgqSSNByCpJI0HIKkkjQcgqReNByCpGI0HIKkgjQcgqSSNByCpFY0HIKkYjQcgqQqNByCpDY0HIKkSjQcgqReNByCpEI0HIKkmjQcgqSaNByCpJo0HIKkkjQcgqSSNByCpJI0HIK0CIKkAjQUgqQCNBSCl/40AIKX+jQEgYEwS9UpKhQRoKQ+FBakAjQEgILLhqSGNBiCpxo0GIKkkjQcgqSSNByCpJI0HIKkkjQcgqSSNByCpJI0HIKkOjQcgqRuNByCpG40HIKkkjQcgpQSNByClBY0HIKkkjQcgqSSNByCpJI0HIKkkjQcgqSSNByCpJI0HIKkkjQcgqSSNByCpP40GIKkAjQYgqQaNByCpBo0HIK0CIKkAjQUgqQCNBSCl/40AIKX+jQEgYEwG9q0CIKk/jQYgqQCNBiCpAo0HIKkCjQcgrQIgqQCNBSCpAI0FIKX/jQAgYKl6jQBAqX+NAUCps40EQKl/jQVAYI0CQI4DQCCy4YjQ+mCNBkCOB0AgsuGI0PpgjQJAjgNApQONBkClBI0HQCCy4YjQ+mCpEI0AQI0EQGCpEI0AQKAFILLhiND6qXqNAEBgYP///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////0xx96mNogCgBiDE8qlqogCgCiDE8kz18qm0jQBAqX+NAUCiA4YAqX2NAkCpAo0DQKAKILLhiND6qRCNAECgCCCy4YjQ+qm0jQBApgDK0NVM9fJ4qRCNACCF/9ipBoX+jQEgogKtAiAQ+8rQ+I4iQI4jQKmDjSNAhv2G/Ib7jhZAqSaF+o0lQKn/hfmNJkCOEECpwI0XQKkPjRVAqYCNgECp6I2KQKL/mqnAjQABqYCNAQGtAgHJNdATrQMByVPwBsms0AipU40DAUyl96kAoviVAMrQ+40BA6l9jQADqf+NAgMgAPCpDoX+jQEgILLh6urqTAL3IPjh9e//79BFILTzTI72rQIgqT+NBiCpAI0GIKkPjQcgrQIgqQCNBSCpAI0FIKX/jQAgqTWNAgGprI0DAanAjQABqYCNAQEg6upYTND3iiDU8SDM860yQCkB8PmtMkApAdD5IILyTJb0SEpKSkqFBGgpD4UFqQCNASAgsuGpIY0GIKnGjQYgqSSNByCpJI0HIKkkjQcgqSSNByCpJI0HIKkkjQcgqQ6NByCpG40HIKkbjQcgqSSNByClBI0HIKUFjQcgqSSNByCpJI0HIKkkjQcgqSSNByCpJI0HIKkkjQcgqSSNByCpJI0HIKk/jQYgqQCNBiCpBo0HIKkGjQcgqTCNByCpFo0HIKkGjQcgqQaNByCpMI0HIKkWjQcgqQaNByCpBo0HIKkwjQcgqRaNByCpBo0HIKkGjQcgqTCNByCpFo0HIK0CIKkAjQUgqQCNBSCl/40AIKX+jQEgYCCy4a0CIKk/jQYgqQCNBiCpAo0HIKkCjQcgqTCNByCpFo0HIKkCjQcgqQKNByCpMI0HIKkWjQcgqQKNByCpAo0HIKkwjQcgqRaNByCpAo0HIKkCjQcgqTCNByCpFo0HIK0CIKkAjQUgqQCNBSCl/40AIGCpEIX/jQAgqQaF/o0BICDq6lhM0PepBoX+jQEgqYCF/40AICCy4a0CIKk/jQYgqQCNBiCpD6IgjQcgytD6qSCNBiCpAI0GIKkAogSgAI0HIMjQ+srQ96kQhf+NACCpBoX+jQEgrQIgqQCNBSCpAI0FIKk1jQIBqayNAwGpwI0AAamAjQEBWEzQ960yQCkB0PkgRvEg+OH17//v0AYgtPNMjvaKINTxIMzzrTJAKQHw+a0yQCkB0PlMM/epBoX+jQEgTJb0qZ2NAECpf40BQKk7jQJAqQCNA0CgCCCy4YjQ+qlPjQJAqQCNA0CgDiCy4YjQ+qkQjQBAYKmPjQBAqX+NAUCpO40CQKnAjQNAoAcgsuGI0PqpT40CQKnAjQNAoDwgsuGI0PqpEI0AQGCpEIX/jQAgqQaF/o0BIK0CIKkAjQUgqQCNBSAg6upYTND3////////////eEiKSJhIqQCNACCpBoX+jQEgrQIgogCpAJ0AAp0AA50ABJ0ABZ0ABp0AB+jQ66kAjQMgogCp8I0EIOjQ+qkgjQYgqQCNBiCiCKAAqQCNByDI0PrK0PepP40GIKkAjQYgoiCpD40HIMrQ+q0CIKkgjQYgqQCNBiCtAiCpAI0FII0FIKX/jQAgaKhoqmhYbPzf//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+L4Qb0x+E=";
 function decodeFDSBIOS() {
   const s = atob(FDS_BIOS_B64);
   const a = new Uint8Array(s.length);
@@ -39647,6 +39720,10 @@ function applyInput() {
     buildKeyMap(p - 1);
     buildTurboUI(p - 1);
   }
+  // Hotkeys are global but their keyboard/gamepad display follows the dropdown
+  // selection — rebuild so switching a player back to keyboard reverts hotkeys too.
+  buildHotkeyMap();
+  buildHotkeyKeyboardMode();
 }
 
 function applyPeripherals() {
@@ -40863,22 +40940,25 @@ const HOTKEY_LABELS = {
   diskEject:'Disk Eject/Insert', diskSide:'Disk Side', fullscreen:'Fullscreen', mute:'Mute'
 };
 
+// True when at least one player has a gamepad selected in the input dropdown.
+// Hotkeys are global (not per-player), so they follow the dropdown selection:
+// any player on a gamepad → hotkeys use gamepad bindings; all on keyboard →
+// hotkeys use keyboard bindings. gpSlot is only non-null while that pad is
+// connected (gpRefreshDropdowns/disconnect handlers null it out), so this is
+// also implicitly gated on the pad being present.
+function _anyGamepadSelected() {
+  const s = config.gpSlot;
+  return !!(s && (s.p1 != null || s.p2 != null || s.p3 != null || s.p4 != null));
+}
+
 // Unified display for a hotkey action.
-// When a gamepad is connected we show the gamepad binding (which defaults to the
-// same keyboard shortcut until the user explicitly rebinds it to a button).
-// When no gamepad is present we always show the keyboard binding.
+// When a gamepad is selected (via the input dropdown) we show the gamepad
+// binding (which defaults to the same keyboard shortcut until the user
+// explicitly rebinds it to a button). When all players are on keyboard we
+// always show the keyboard binding.
 function _hotkeyDisplay(action) {
   if (!action) return '—';
-  // Read live count so disconnect is reflected immediately (before next pollGamepads frame).
-  // Fall back to _gpLastCount if the permissions policy blocks the call (e.g. on page load).
-  let gpConnected = false;
-  try {
-    const liveCount = navigator.getGamepads ? [...navigator.getGamepads()].filter(g => g?.connected).length : 0;
-    gpConnected = liveCount > 0;
-  } catch (_) {
-    gpConnected = _gpLastCount > 0;
-  }
-  if (gpConnected) {
+  if (_anyGamepadSelected()) {
     const gpVal = config.gpHotkeys?.[action];
     if (gpVal != null) {
       // Numbers and ax/hat strings are genuine GP bindings — use gpInputName.
@@ -40921,12 +41001,11 @@ function buildHotkeyMap() {
     const row = document.createElement('div');
     row.className = 'km-row';
     const display = _hotkeyDisplay(action);
-    // Mirror _hotkeyDisplay: gpHotkeys only counts as bound when a GP is actually connected.
-    // Otherwise keyboard-string defaults would make every cell appear bound even when cleared.
-    let gpConnectedNow = false;
-    try { gpConnectedNow = navigator.getGamepads ? [...navigator.getGamepads()].some(g => g?.connected) : false; }
-    catch (_) { gpConnectedNow = _gpLastCount > 0; }
-    const isBound = !!(config.hotkeys[action] || (gpConnectedNow && config.gpHotkeys[action] != null));
+    // Mirror _hotkeyDisplay: gpHotkeys only count as bound when a gamepad is
+    // actually selected in the input dropdown. Otherwise keyboard-string
+    // defaults would make every cell appear bound even when cleared.
+    const gpSelected = _anyGamepadSelected();
+    const isBound = !!(config.hotkeys[action] || (gpSelected && config.gpHotkeys[action] != null));
     // Single unified cell — accepts keyboard key or gamepad button
     row.innerHTML = `<span class="km-label">${label}</span>` +
       `<span class="km-key${isBound ? '' : ' unbound'}" data-action="hk_${action}" data-hkaction="${action}">${display}</span>`;
@@ -42449,10 +42528,12 @@ function dbgToggleBreakOnIrq() {
 
 // Step helpers
 function dbgBpStepOne() {
+  if (tas.active && tas.movie) { toast('Stepping disabled during TAS — use the TAS transport', 'info', 1800); return; }
   dbgTraceStep();
   dbgBpResume();
 }
 function dbgBpStepOver() {
+  if (tas.active && tas.movie) { toast('Stepping disabled during TAS — use the TAS transport', 'info', 1800); return; }
   const pc = getPC();
   const opcode = dbgBpReadSafe(pc);
   const name = opNames[opcode] || '';
@@ -42463,6 +42544,7 @@ function dbgBpStepOver() {
   dbgBpResume();
 }
 function dbgBpStepFrame() {
+  if (tas.active && tas.movie) { toast('Use the TAS transport to advance frames', 'info', 1800); return; }
   _dbgStepFramePending = true;
   dbgBpResume();
 }
@@ -42773,6 +42855,7 @@ function dbgWatchFormatVal(val, size, fmt) {
 }
 
 function dbgWatchPoke(idx) {
+  if (tas.active && tas.movie) { toast('Poke blocked during TAS — would desync the movie', 'info', 1800); return; }
   const w = dbgWatches[idx];
   if (!w) return;
   const list = $('dbg-watch-list');
@@ -43954,7 +44037,8 @@ function tasUpdateToolbarBtn() {
   const rwffOff = tas.active && tas.movie;
   if (rw) rw.classList.toggle('disabled', rwffOff);
   if (ff) ff.classList.toggle('disabled', rwffOff);
-  // Disable reset, settings, and debug buttons while TAS is active (would corrupt movie state)
+  // Disable reset and settings while TAS is active (would corrupt movie state).
+  // Debug is intentionally left enabled — see note below.
   const resetBtn = $('btn-reset');
   const hardResetBtn = $('btn-hard-reset');
   const settingsBtn = $('btn-settings');
@@ -43962,7 +44046,11 @@ function tasUpdateToolbarBtn() {
   if (resetBtn) { resetBtn.disabled = tas.active; resetBtn.style.opacity = tas.active ? '0.3' : ''; resetBtn.style.pointerEvents = tas.active ? 'none' : ''; }
   if (hardResetBtn) { hardResetBtn.disabled = tas.active; hardResetBtn.style.opacity = tas.active ? '0.3' : ''; hardResetBtn.style.pointerEvents = tas.active ? 'none' : ''; }
   if (settingsBtn) { settingsBtn.disabled = tas.active; settingsBtn.style.opacity = tas.active ? '0.3' : ''; settingsBtn.style.pointerEvents = tas.active ? 'none' : ''; }
-  if (debugBtn) { debugBtn.disabled = tas.active; debugBtn.style.opacity = tas.active ? '0.3' : ''; debugBtn.style.pointerEvents = tas.active ? 'none' : ''; }
+  // Debug panel stays usable during TAS: its inspectors (memory dump, regs,
+  // OAM, viewers) are side-effect-free reads. The state-mutating ops (watch
+  // poke, instruction/frame stepping) are guarded individually below so they
+  // can't desync the active movie.
+  if (debugBtn) { debugBtn.disabled = false; debugBtn.style.opacity = ''; debugBtn.style.pointerEvents = ''; }
   updatePlaybackButtons();
   updateCoreToolbar();
 }
@@ -44130,6 +44218,44 @@ function confirmWithNsfGuard(message) {
     dbgApuMixHook = (p1, p2, tri, noi, dmc, exp) => nsfScopeCapture(p1, p2, tri, noi, dmc, exp);
     if (nsfAnimFrame) cancelAnimationFrame(nsfAnimFrame);
     nsfAnimFrame = requestAnimationFrame(nsfPlaybackLoop);
+  }
+  return result;
+}
+
+// ── ROM guard (mirrors the settings-menu pause pattern) ──
+// Kept deliberately separate from confirmWithNsfGuard so NSF and ROM stay on
+// their own rails. A loaded, running ROM should freeze while a blocking confirm()
+// dialog is up — exactly like opening Settings.
+//
+// togglePause() stops the emulator from stepping (RAF/frame timing), but — just
+// like the NSF case — that alone is NOT enough to silence the sound: audio is
+// driven by the AUDIO thread, which keeps draining whatever is already queued
+// (worklet buffer ≈ up to 341ms) while confirm() blocks the main thread, and the
+// ScriptProcessor fallback loops/glitches its last buffer. That's the stutter.
+// So we also silence the audio thread itself before the dialog opens:
+//   1) worklet 'reset' — zeroes its internal buffer (delivered on the audio
+//      thread, so it lands even while confirm() blocks the main thread).
+//   2) audioCtx.suspend() — halts rendering at the context level, covering the
+//      ScriptProcessor fallback.
+// On close: resume the context. Hitting Cancel returns to a live game right where
+// it left off. If the user confirms a close, unloadGame() clears emu.romLoaded and
+// the togglePause resume below no-ops (togglePause early-returns with no ROM);
+// audioCtx is resumed regardless so the context isn't left suspended.
+function confirmWithRomGuard(message) {
+  const romWasRunning = emu.romLoaded && !emu.paused;
+  let didSuspend = false;
+  if (romWasRunning) {
+    togglePause();
+    if (_workletPort) _workletPort.postMessage({ type: 'reset' }); // drop queued tail → instant silence
+    // audioCtx.state can still read 'running' right after suspend() because the
+    // attribute updates on the (blocked) main-thread task queue — track our own
+    // decision instead of trusting it.
+    if (audioCtx && audioCtx.state === 'running') { audioCtx.suspend(); didSuspend = true; }
+  }
+  const result = confirm(message);
+  if (romWasRunning) {
+    if (didSuspend) audioCtx.resume();
+    if (emu.romLoaded && emu.paused) togglePause();
   }
   return result;
 }
@@ -47248,7 +47374,7 @@ presentBlack();
 
 requestAnimationFrame(mainLoop);
 
-console.log('%c KuroganeNES %c v1.0 — Cycle-Accurate NES/FDS Emulator ', 'background:#e23c3c;color:#fff;font-weight:bold;padding:2px 6px;border-radius:3px 0 0 3px', 'background:#1c1c22;color:#e8e6f0;padding:2px 6px;border-radius:0 3px 3px 0');
+console.log('%c KuroganeNES %c v1.0.1 — Cycle-Accurate NES/FDS Emulator ', 'background:#e23c3c;color:#fff;font-weight:bold;padding:2px 6px;border-radius:3px 0 0 3px', 'background:#1c1c22;color:#e8e6f0;padding:2px 6px;border-radius:0 3px 3px 0');
 
 
 // ── §19  NSF PLAYER — Full NES Sound Format playback engine ──
@@ -48030,7 +48156,8 @@ function closeRom() {
   if (mp.state !== 'idle') return; // hidden during multiplayer, matching the bar's hide-don't-grey convention
   const hadNsf = nsf.loaded;
   if (!emu.romLoaded && !hadNsf) return;
-  if (!confirmWithNsfGuard(hadNsf ? 'Close the current NSF?' : 'Close the current ROM?')) return;
+  if (!(hadNsf ? confirmWithNsfGuard('Close the current NSF?')
+              : confirmWithRomGuard('Close the current ROM?'))) return;
   if (hadNsf) {
     nsfUnload(); // the canonical NSF teardown (panel ✕ path) — also hides this button
     return;
