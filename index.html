@@ -1603,6 +1603,19 @@ html, body {
 .cheat-row input[type="checkbox"] { accent-color:var(--green); margin:0; cursor:pointer; }
 .cheat-code { color:var(--gold); letter-spacing:1.5px; min-width:72px; }
 .cheat-decoded { color:var(--text-muted); font-size:10px; flex:1; }
+/* Cheat names — a local label per code; click to edit (Enter saves, Esc cancels) */
+.cheat-main { display:flex; flex-direction:column; flex:1; min-width:0; gap:1px; cursor:text; }
+.cheat-main.named .cheat-code { font-size:10px; letter-spacing:1px; min-width:0; }
+.cheat-name { color:var(--text); font-family:var(--font-ui, inherit); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.cheat-name.placeholder { color:var(--text-muted); font-style:italic; opacity:0; transition:opacity 0.12s; }
+.cheat-row:hover .cheat-name.placeholder, .cheat-row:focus-within .cheat-name.placeholder { opacity:0.8; }
+@media (hover: none) { .cheat-name.placeholder { opacity:0.6; } }
+.cheat-sub { display:flex; gap:6px; align-items:baseline; min-width:0; }
+.cheat-name-input {
+  width:100%; box-sizing:border-box; background:var(--bg); color:var(--text); border:1px solid var(--gold);
+  border-radius:3px; padding:2px 5px; font-family:var(--font-ui, inherit); font-size:12px; outline:none;
+}
+@media (max-width: 720px) { .cheat-name-input { font-size:16px; } } /* no iOS zoom on focus */
 .cheat-del {
   background:none; border:none; color:var(--text-muted); cursor:pointer;
   font-size:14px; padding:0 2px; line-height:1; opacity:.6; transition:opacity .15s;
@@ -40508,12 +40521,47 @@ function addCheat(code) {
   if (cheats.some(c => c.code === code)) { toast('Code already added', 'error'); return false; }
   const decoded = decodeGameGenie(code);
   if (!decoded) return false;
-  cheats.push({ code, addr: decoded.addr, value: decoded.value, compare: decoded.compare, enabled: true });
+  cheats.push({ code, addr: decoded.addr, value: decoded.value, compare: decoded.compare, enabled: true, name: '' });
   updateCheatsActive();
   renderCheatList();
   saveCheatsForRom();
   toast(`Cheat applied: ${code}`, 'success');
   return true;
+}
+
+// ── Cheat names: a label stored with the code in this browser's cheat list only ──
+// (Never sent to multiplayer guests or written into TAS movies — those carry bare codes.)
+const CHEAT_NAME_MAX = 40;
+function setCheatName(index, name) {
+  const c = cheats[index];
+  if (!c) return;
+  c.name = String(name || '').trim().slice(0, CHEAT_NAME_MAX);
+  renderCheatList();
+  saveCheatsForRom();
+}
+function _cheatBeginNameEdit(mainEl, index) {
+  if (mainEl.querySelector('.cheat-name-input')) return;
+  const c = cheats[index];
+  if (!c) return;
+  const input = document.createElement('input');
+  input.type = 'text'; input.className = 'cheat-name-input'; input.maxLength = CHEAT_NAME_MAX;
+  input.value = c.name || ''; input.placeholder = 'Name this code (e.g. Start on level 2)';
+  input.setAttribute('aria-label', 'Cheat name');
+  const nameEl = mainEl.querySelector('.cheat-name');
+  nameEl.replaceWith(input);
+  let done = false;
+  const finish = (commit) => {
+    if (done) return; done = true;
+    if (commit) setCheatName(index, input.value); else renderCheatList();
+  };
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    e.stopPropagation(); // keep emulator hotkeys out of the field
+  });
+  input.addEventListener('keyup', e => e.stopPropagation());
+  input.addEventListener('blur', () => finish(true));
+  input.focus(); input.select();
 }
 
 function removeCheat(index) {
@@ -40540,10 +40588,15 @@ function renderCheatList() {
     const addrHex = '$' + c.addr.toString(16).toUpperCase().padStart(4, '0');
     const valHex = '$' + c.value.toString(16).toUpperCase().padStart(2, '0');
     const cmpStr = c.compare !== null ? (' ?' + c.compare.toString(16).toUpperCase().padStart(2, '0')) : '';
+    const name = c.name || '';
+    const safeName = name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     row.innerHTML =
       `<input type="checkbox" ${c.enabled ? 'checked' : ''} data-idx="${i}">` +
-      `<span class="cheat-code">${c.code}</span>` +
-      `<span class="cheat-decoded">${addrHex}←${valHex}${cmpStr}</span>` +
+      `<div class="cheat-main${name ? ' named' : ''}" data-idx="${i}" title="Click to name this code">` +
+        `<span class="cheat-name${name ? '' : ' placeholder'}">${name ? safeName : 'Name this code…'}</span>` +
+        `<span class="cheat-sub"><span class="cheat-code">${c.code}</span>` +
+        `<span class="cheat-decoded">${addrHex}←${valHex}${cmpStr}</span></span>` +
+      `</div>` +
       `<button class="cheat-del" data-idx="${i}" title="Remove">×</button>`;
     list.appendChild(row);
   });
@@ -40552,7 +40605,7 @@ function renderCheatList() {
 
 async function saveCheatsForRom() {
   if (!hw.romHash) return;
-  const data = cheats.map(c => ({ code: c.code, enabled: c.enabled }));
+  const data = cheats.map(c => c.name ? { code: c.code, enabled: c.enabled, name: c.name } : { code: c.code, enabled: c.enabled });
   await idbSet(`cheats-${hw.romHash}`, JSON.stringify(data));
 }
 
@@ -40567,7 +40620,8 @@ async function loadCheatsForRom() {
           for (const c of data) {
             const decoded = decodeGameGenie(c.code);
             if (decoded) {
-              cheats.push({ code: c.code, addr: decoded.addr, value: decoded.value, compare: decoded.compare, enabled: c.enabled !== false });
+              cheats.push({ code: c.code, addr: decoded.addr, value: decoded.value, compare: decoded.compare, enabled: c.enabled !== false,
+                            name: typeof c.name === 'string' ? c.name.slice(0, CHEAT_NAME_MAX) : '' });
             }
           }
         }
@@ -40609,6 +40663,9 @@ $('cheat-input').addEventListener('input', e => {
 });
 
 $('cheat-list').addEventListener('click', e => {
+  const main = e.target.closest('.cheat-main');
+  if (main && !e.target.closest('.cheat-name-input')) { _cheatBeginNameEdit(main, parseInt(main.dataset.idx)); return; }
+  if (e.target.closest('.cheat-name-input')) return;
   if (mp.state !== 'idle') { toast('Cheats are locked during multiplayer', 'info', 2500); return; }
   const del = e.target.closest('.cheat-del');
   if (del) { removeCheat(parseInt(del.dataset.idx)); return; }

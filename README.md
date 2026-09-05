@@ -12,7 +12,7 @@ A cycle-accurate NES and Famicom Disk System emulator that runs entirely in the 
 - Local and online multiplayer, 2P and 4P (Four Score), over a lightweight WebSocket relay.
 - Peripherals beyond controllers: the Zapper light gun (with a beam-timing photodiode model rather than a simple pixel check), Power Pad, Family Basic and Subor keyboards, Oeka Kids tablet, and the Famicom microphone, all auto-selected per game from the ROM database.
 - Vs. System arcade support with per-game DIP switches.
-- Game Genie cheats and built-in ROM patching (IPS, BPS, and xdelta).
+- Game Genie cheats with nameable codes, and built-in ROM patching (IPS, BPS, and xdelta).
 - An NSF / NSFe / NSF2 music player with region-correct playback, multi-chip expansion audio, and a piano-roll visualizer with real pitch for every chip, plus a TAS studio with instant frame stepping, deterministic movies, and Vs. / FDS support.
 - A full suite of debugging tools, including a CPU/PPU debugger, memory and nametable viewers, pattern and palette inspectors, an execution heatmap, and an APU oscilloscope with per-channel mute.
 - Fully self-contained. All the code, fonts, and libraries are inlined, so the page makes no external requests.
@@ -124,6 +124,10 @@ key.pem         TLS private key (you provide, see setup above).
 - Multi-chip NSFs play every declared chip, with NSFe `mixe` levels applied.
 - NSFe `plst`, `psfx`, `taut`, `text`, `regn`, `mixe`, `VRC7` and `NSF2` chunks are parsed.
 - Plain NSFs show elapsed time only; NSFe track times still show a total and fade.
+
+**Cheats**
+
+- Game Genie codes can be named. Click a code in the Cheats list and type a label such as "Start on level 2"; Enter saves, Escape cancels. Names are stored with your per-game cheat list in this browser only and are never sent to multiplayer guests or written into TAS movies.
 
 **Tooling**
 
