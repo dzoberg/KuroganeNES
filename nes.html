@@ -1880,7 +1880,7 @@ html, body {
 .ui2 .turbo-led::after { content:''; position:absolute; top:3px; left:3px; width:18px; height:18px; border-radius:9px; background:#efece5; box-shadow:0 1px 2px rgba(0,0,0,.35); transition:left .15s; }
 .ui2 .turbo-led.on { background:var(--nes-red); box-shadow:inset 0 2px 3px rgba(0,0,0,.25); }
 .ui2 .turbo-led.on::after { left:23px; }
-.ui2 .controls-row { background:linear-gradient(180deg, var(--face-hi), var(--face)); border-radius:26px 26px 0 0; padding:26px 22px calc(var(--statusbar-h) + 12px);
+.ui2 .controls-row { background:linear-gradient(180deg, var(--face-hi), var(--face)); border-radius:26px 26px 0 0; padding:26px 22px 14px;
   padding-left:max(22px, env(safe-area-inset-left)); padding-right:max(22px, env(safe-area-inset-right)); align-items:flex-start; }
 .ui2 .controls-row::before { content:''; position:absolute; top:10px; left:50%; transform:translateX(-50%); width:44px; height:4px; border-radius:2px; background:#3a3b41; }
 .ui2 .dpad-btn { background:#0d0d10; border:0; color:#4a4b52; opacity:1; box-shadow:inset 0 0 0 1px #2a2b30; }
@@ -1910,7 +1910,7 @@ html, body {
       applied by fitControlsOverlay() via the zoom property. ── */
 .ui2 #powerpad-overlay.visible, .ui2 #fbkeyboard-overlay.visible, .ui2 #suborkeyboard-overlay.visible {
   /* the clearance is divided by the zoom factor so it stays a true statusbar-height + 12 px after zoom */
-  padding-bottom:calc((var(--statusbar-h) + 12px) / var(--ov-zoom, 1)); opacity:1; max-height:none; }
+  padding-bottom:calc(12px / var(--ov-zoom, 1)); opacity:1; max-height:none; }
 .ui2 #powerpad-overlay.visible { padding-top:10px; }
 .ui2 .pp-pad { border:0; opacity:.9; box-shadow:0 4px 0 rgba(0,0,0,.35), inset 0 -3px 0 rgba(0,0,0,.18); font-family:var(--font-ui); text-shadow:none; }
 .ui2 .pp-pad.pressed { opacity:1; transform:translateY(2px); box-shadow:0 2px 0 rgba(0,0,0,.35), inset 0 -2px 0 rgba(0,0,0,.18); }
@@ -2087,7 +2087,7 @@ html, body {
   .ui2 #mobile-controls { background:transparent; }
   .ui2 #mobile-controls::before { display:none; }
   .ui2 .ctrl-top-row { border-bottom:0; padding:4px 10px; }
-  .ui2 .controls-row { background:transparent; border-radius:0; padding:6px 10px calc(var(--statusbar-h) + 6px); }
+  .ui2 .controls-row { background:transparent; border-radius:0; padding:6px 10px 6px; padding-left:max(10px, min(env(safe-area-inset-left), 16px)); padding-right:max(10px, min(env(safe-area-inset-right), 16px)); }
   .ui2 .controls-row::before { display:none; }
   .ui2 .dpad-btn, .ui2 .dpad-center, .ui2 .ab-btn, .ui2 .meta-btn { opacity:.78; }
   .ui2 .dpad-btn.pressed, .ui2 .ab-btn.pressed, .ui2 .meta-btn.pressed { opacity:1; }
@@ -2112,6 +2112,32 @@ html, body {
 .ui2 #status-left > #fds-disk-controls, .ui2 #status-left > #tape-controls, .ui2 #status-left > #barcode-controls, .ui2 #status-left > #mp-controls,
 .ui2 #status-left > #fds-disk-controls:not(:empty), .ui2 #status-left > #tape-controls:not(:empty), .ui2 #status-left > #barcode-controls:not(:empty), .ui2 #status-left > #mp-controls:not(:empty) {
   height:auto; padding:0; background:none; border-radius:0; white-space:normal; }
+
+/* ── Controls size (Settings → Controls → On-screen controls size): one variable scales the pad ── */
+.ui2 { --pad-scale:1; }
+.ui2 .dpad-container { grid-template-columns:repeat(3, calc(44px * var(--pad-scale))); grid-template-rows:repeat(3, calc(44px * var(--pad-scale))); }
+.ui2 .ab-btn { width:calc(64px * var(--pad-scale)); height:calc(64px * var(--pad-scale)); font-size:calc(22px * var(--pad-scale)); }
+.ui2 .dpad-btn svg { width:calc(16px * var(--pad-scale)); height:calc(16px * var(--pad-scale)); }
+
+/* ── Landscape side bands: controls beside the picture, never over it (deck.bands set by JS) ── */
+@media (orientation:landscape) and (max-height:500px) {
+  .ui2 #mobile-controls.bands { top:0; left:0; right:0; padding:0; background:transparent; }   /* bottom stays anchored to the strip (layoutDeckAnchor) */
+  .ui2 #mobile-controls.bands::before { display:none; }
+  .ui2 #mobile-controls.bands .ctrl-top-row, .ui2 #mobile-controls.bands .controls-row { display:contents; }
+  .ui2 #mobile-controls.bands .player-toggle, .ui2 #mobile-controls.bands .rw-ff-btn, .ui2 #mobile-controls.bands .mic-indicator, .ui2 #mobile-controls.bands .ctrl-right-group,
+  .ui2 #mobile-controls.bands .dpad-container, .ui2 #mobile-controls.bands .ab-container, .ui2 #mobile-controls.bands .center-btns { position:absolute; opacity:1; pointer-events:auto; }
+  /* left band: transport keys along the top, D-pad centred vertically */
+  .ui2 #mobile-controls.bands .player-toggle { left:calc((var(--band-w) - 150px) / 2); top:56px; min-width:44px; height:36px; }
+  .ui2 #mobile-controls.bands .rw-ff-btn#btn-rw-touch { left:calc((var(--band-w) - 150px) / 2 + 50px); top:56px; min-width:46px; height:36px; }
+  .ui2 #mobile-controls.bands .rw-ff-btn#btn-ff-touch { left:calc((var(--band-w) - 150px) / 2 + 102px); top:56px; min-width:46px; height:36px; }
+  .ui2 #mobile-controls.bands .mic-indicator { left:calc((var(--band-w) - 150px) / 2); top:100px; }
+  .ui2 #mobile-controls.bands .dpad-container { left:calc((var(--band-w) - 132px * var(--pad-scale)) / 2); top:50%; transform:translateY(-38%); }
+  /* right band: Turbo (and coin) along the top, A/B centred, Select/Start below them */
+  .ui2 #mobile-controls.bands .ctrl-right-group { right:calc((var(--band-w) - 150px) / 2); top:60px; margin:0; }
+  .ui2 #mobile-controls.bands .ab-container { right:calc((var(--band-w) - 146px * var(--pad-scale)) / 2); top:50%; transform:translateY(-52%); padding:0; }
+  .ui2 #mobile-controls.bands .center-btns { right:calc((var(--band-w) - 106px) / 2); bottom:36px; padding:0; width:106px; flex:none; }   /* labels sit 22 px under the pills */
+  .ui2 #mobile-controls.bands .dpad-btn, .ui2 #mobile-controls.bands .dpad-center, .ui2 #mobile-controls.bands .ab-btn, .ui2 #mobile-controls.bands .meta-btn { opacity:1; }
+}
 </style>
 </head>
 <body>
@@ -3240,6 +3266,14 @@ html, body {
         <div class="setting-row">
           <span class="setting-label">Show Mobile Controls (Desktop)</span>
           <label class="toggle"><input type="checkbox" id="opt-mobile-desktop"><span class="toggle-slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label">On-screen Controls Size</span>
+          <select class="setting-select" id="opt-pad-scale">
+            <option value="0.88">Small</option>
+            <option value="1" selected>Standard</option>
+            <option value="1.14">Large</option>
+          </select>
         </div>
         <div class="setting-row">
           <span class="setting-label">Haptic Feedback (Mobile Controls)</span>
@@ -5451,6 +5485,11 @@ const HS = {};
 //     Touch controls: no layout reads in touchmove, cached geometry, coalesced class updates.
 //     Mobile portrait layout: a top-anchored picture (RetroArch/Delta style) was tried in build
 //     nes9 and reverted by choice — the centered picture stays. Revisit only with a mock-up first.
+//     Controls layout engine (nes32, layoutDeckAnchor / layoutLandscapeBands): the deck is anchored
+//     to the strip's MEASURED top (not a CSS variable) and re-measured on resize / orientation /
+//     fullscreen / visualViewport with settling passes; landscape phones place the controls in the
+//     bands beside the picture when ≥150 px wide (deck.bands), else the translucent overlay; side
+//     safe-area insets are capped at 16 px for the pad; --pad-scale sizes the D-pad and A/B.
 //     Press feedback rule (nes23): motion for presses (keys dip via .pressed/.held, driven by pointer
 //     events — Android ignores :active under our touch handlers), colour only for state (Turbo,
 //     TAS toggles, LED). Console actions (disk eject/side, recorder) stay on the strip, not the deck.
@@ -41540,8 +41579,16 @@ function closeSettings() {
 $('settings-close').addEventListener('click', closeSettings);
 $('settings-modal').addEventListener('click', e => { if (e.target === $('settings-modal')) closeSettings(); });
 
+function applyPadScale() {
+  const k = (config.padScale && isFinite(config.padScale)) ? config.padScale : 1;
+  document.documentElement.style.setProperty('--pad-scale', String(k));
+  const el = $('opt-pad-scale'); if (el) el.value = String(k);
+  if (typeof touchGeoInvalidate === 'function' && touchGeoInvalidate) touchGeoInvalidate();
+  if (typeof layoutReserveControls === 'function') { layoutReserveControls(); resizeScreen(); }
+}
 function applyDisplay() {
   $('opt-int-scale').checked = config.intScale;
+  applyPadScale();
   document.documentElement.classList.add('ui2');   // the v2 skin is the interface (the classic look was retired in nes17)
   $('opt-overscan').value = config.overscan;
   $('opt-aspect').value = config.aspect;
@@ -41595,8 +41642,9 @@ function fitControlsOverlay() {
   let picH = 0;
   const wrap = $('screen-wrapper');
   if (!landscape && wrap && wrap.offsetWidth && wrap.offsetHeight) picH = Math.min(screenArea.clientWidth * wrap.offsetHeight / wrap.offsetWidth, window.innerHeight * 0.5);
-  const pad = sb + 12;                                              // bottom clearance, kept unscaled (see the CSS)
-  const allowed = window.innerHeight - top - picH - transport - 12; // total height the overlay may take
+  const sbTop = ($('statusbar') || {}).getBoundingClientRect ? $('statusbar').getBoundingClientRect().top : window.innerHeight;
+  const pad = 12;                                                    // bottom clearance inside the overlay, kept unscaled (see the CSS)
+  const allowed = sbTop - top - picH - transport - 12;               // total height the overlay may take (deck is anchored above the strip)
   const k = Math.max(0.45, Math.min(1, (allowed - pad) / Math.max(1, natural - pad)));
   if (k < 0.995) { ov.style.zoom = k.toFixed(3); ov.style.setProperty('--ov-zoom', k.toFixed(3)); }
 }
@@ -41610,17 +41658,50 @@ function statusbarHeightWatch() {
     const h = sb.offsetHeight; if (!h || h === last) return;
     last = h; document.documentElement.style.setProperty('--statusbar-h', h + 'px');
     if (typeof layoutReserveControls === 'function') { layoutReserveControls(); resizeScreen(); }
+    setTimeout(() => { if (typeof layoutDeckAnchor === 'function') layoutDeckAnchor(); }, 50);
   };
   if ('ResizeObserver' in window) new ResizeObserver(apply).observe(sb); else window.addEventListener('resize', apply);
   apply();
 }
 document.addEventListener('DOMContentLoaded', statusbarHeightWatch);
+// Anchor the deck above the strip by measurement. Both are fixed to the viewport bottom, but the
+// deck's clearance used to come from --statusbar-h, which can lag the strip's real height for a
+// frame during a rotation or a fullscreen exit on Android — leaving the pad under the strip. Now
+// the deck's `bottom` is the measured distance from the viewport bottom to the strip's top edge.
+function layoutDeckAnchor() {
+  const mc = $('mobile-controls'), sb = $('statusbar'); if (!mc || !sb) return;
+  const sbTop = sb.getBoundingClientRect().top;
+  const b = (sb.offsetHeight > 0 && sbTop > 0) ? Math.max(0, Math.round(window.innerHeight - sbTop)) : 0;
+  const v = b + 'px'; if (mc.style.bottom !== v) mc.style.bottom = v;
+  layoutLandscapeBands(mc);
+}
+// Landscape phones: put the controls in the black bands beside the picture when they fit.
+function layoutLandscapeBands(mc) {
+  const landscape = window.innerWidth > window.innerHeight && window.innerHeight <= 500;
+  const wrap = $('screen-wrapper');
+  let bands = false, bandW = 0;
+  if (landscape && wrap && wrap.offsetWidth) {
+    bandW = Math.floor((window.innerWidth - wrap.getBoundingClientRect().width) / 2);
+    bands = bandW >= 150;   // D-pad 132 + margins
+  }
+  mc.classList.toggle('bands', bands);
+  if (bands) document.documentElement.style.setProperty('--band-w', bandW + 'px');
+}
+// Re-anchor on every viewport event, with settling passes (rotation animations take ~300 ms).
+(function deckAnchorWatch() {
+  const kick = () => { layoutDeckAnchor(); [60, 250, 600].forEach(ms => setTimeout(() => { layoutDeckAnchor(); if (typeof resizeScreen === 'function') resizeScreen(); }, ms)); };
+  window.addEventListener('resize', kick); window.addEventListener('orientationchange', kick);
+  document.addEventListener('fullscreenchange', kick); document.addEventListener('webkitfullscreenchange', kick);
+  if (window.visualViewport) { window.visualViewport.addEventListener('resize', kick); window.visualViewport.addEventListener('scroll', kick); }
+  document.addEventListener('DOMContentLoaded', kick);
+})();
 function layoutReserveControls() {
+  layoutDeckAnchor();
   fitControlsOverlay();
   const mc = $('mobile-controls'), sb = $('statusbar');
   const landscape = window.innerWidth > window.innerHeight && window.innerHeight <= 500;
   let reserve = 0;
-  if (mc && mc.classList.contains('visible') && !landscape) reserve = Math.max(0, mc.offsetHeight - (sb ? sb.offsetHeight : 0));
+  if (mc && mc.classList.contains('visible') && !landscape) reserve = Math.max(0, mc.offsetHeight);   // deck is anchored above the strip: its whole height overlaps the screen area
   if (HS.controlsReserve !== reserve) {
     // Animate only for changes while a picture is already on screen (gamepad connect / disconnect).
     // The first reserve after a ROM loads is applied instantly, so the picture appears already
@@ -41819,6 +41900,7 @@ function bindSettings() {
   };
   // Display settings → only rebuild display + resize
   bind('opt-int-scale','intScale','checked',applyDisplay);
+  { const el = $('opt-pad-scale'); if (el) el.addEventListener('change', () => { config.padScale = parseFloat(el.value) || 1; applyPadScale(); saveConfig(); }); }
   bind('opt-overscan','overscan','value',applyDisplay);
   bind('opt-aspect','aspect','value',applyDisplay);
   const applyVideoTv = () => { vidApplyTvConfig(); resolveActivePalette(); };
