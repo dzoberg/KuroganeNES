@@ -47887,13 +47887,37 @@ let rwVideoBuilder = [];       // Frames captured during Starting/Started fast-f
 // worst case the pool simply stays empty and we allocate as before.
 const _rwFbPool = [];
 const _RW_FB_POOL_MAX = 96;
+// Rewind frames are captured in whatever form the display needs. In Clean mode (and the CPU
+// composite path) that is the clean framebuffer, shown on the 2D canvas. When the WebGL composite
+// decoder is active, the visible canvas is the GL one and a clean frame would go to a hidden
+// canvas (the screen held still through rewind); so the composite *signal* — the PPU's per-dot
+// codes and the per-line burst parameters — is captured instead and replayed through the same
+// decoder, and rewind stays composite. A signal frame is also smaller than a framebuffer.
+function _rwCompositeCapture() { return compositeVideoEnabled && !ppuModel.isRGB && vidGpuActive; }
+const _rwSigPool = [];
 function _rwAcquireFb() {
+  if (_rwCompositeCapture()) {
+    const f = _rwSigPool.pop() || { code: new Uint16Array(VID_DOTS * 240), lp: new Float32Array(240 * 4) };
+    f.code.set(vidCode.subarray(0, VID_DOTS * 240)); f.lp.set(vidLineParams.subarray(0, 240 * 4));
+    return f;
+  }
   const b = _rwFbPool.pop() || new Uint32Array(framebuffer.length);
   b.set(framebuffer);
   return b;
 }
 function _rwReleaseFb(b) {
-  if (b && b.length === framebuffer.length && _rwFbPool.length < _RW_FB_POOL_MAX) _rwFbPool.push(b);
+  if (!b) return;
+  if (b.code) { if (_rwSigPool.length < _RW_FB_POOL_MAX) _rwSigPool.push(b); return; }
+  if (b.length === framebuffer.length && _rwFbPool.length < _RW_FB_POOL_MAX) _rwFbPool.push(b);
+}
+// Present a saved rewind frame on whichever canvas is right for its form.
+function rwPresentSaved(f) {
+  if (f.code) {
+    vidCode.set(f.code); vidLineParams.set(f.lp);
+    if (vidGpuActive && vidGpuPresent()) return;         // composite, on the GL canvas
+  }
+  vidGpuShow(false);
+  presentFrame(f.code ? framebuffer : f);                 // clean fallback on the 2D canvas
 }
 let rwDisplayChunk = null;     // The chunk whose frames are currently in rwVideoHistory
 
@@ -48506,7 +48530,7 @@ function mainLoop(timestamp) {
       //    display chunk. The saved frame already has correct pixels from capture.
       if (rwVideoHistory.length > 0) {
         const savedFrame = rwVideoHistory.pop(); // pop = most recent frame first (reverse)
-        presentFrame(savedFrame);
+        rwPresentSaved(savedFrame);
         _rwReleaseFb(savedFrame); // MEM-1: frame fully consumed — recycle its buffer
       }
 
