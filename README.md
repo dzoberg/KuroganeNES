@@ -4,17 +4,18 @@ A cycle-accurate NES and Famicom Disk System emulator that runs entirely in the 
 
 ## Features
 
-- Cycle-accurate NES / Famicom and Famicom Disk System emulation, modeled on the NES-001 (RP2A03G + RP2C02G), verified against the blargg test ROMs, a byte-exact nestest log, and a perfect 144/144 on the AccuracyCoin suite.
+- Cycle-accurate NES / Famicom and Famicom Disk System emulation, modeled on the NES-001 (RP2A03G + RP2C02G), verified against the blargg test ROMs, a byte-exact nestest log, and a perfect 144/144 on the AccuracyCoin suite on every one of the console's four CPU/PPU clock alignments.
 - Broad mapper support with CRC32 ROM fingerprinting that auto-corrects iNES headers and picks the right mapper, mirroring, timing region, and peripherals for thousands of known games.
 - NTSC and PAL timing, plus a composite-video mode that is a true analog model: the PPU's 9-bit pixel codes are turned into the actual NTSC (2C02) or PAL (2C07) waveform from measured voltage levels and decoded like a television, with comb, notch and PAL delay-line presets, burst-locked color, and a WebGL2 decoder at signal resolution. Clean mode is the ideal decode of the same signal.
 - Expansion audio for VRC6, VRC7, FDS, MMC5, Namco 163, Sunsoft 5B, and EPSM.
-- Save states, rewind, and fast-forward, with vsync-locked pacing and dynamic audio rate control so playback stays smooth on any display or audio device.
+- Save states, rewind, and fast-forward, with phase-locked frame pacing and dynamic audio rate control so playback stays smooth on any display, including phones that miss or bunch frames.
 - Local and online multiplayer, 2P and 4P (Four Score), over a lightweight WebSocket relay.
 - Peripherals beyond controllers: the Zapper light gun (with a beam-timing photodiode model rather than a simple pixel check), Power Pad, Family Basic and Subor keyboards, Oeka Kids tablet, and the Famicom microphone, all auto-selected per game from the ROM database.
 - Vs. System arcade support with per-game DIP switches.
 - Game Genie cheats with nameable codes, and built-in ROM patching (IPS, BPS, and xdelta).
 - An NSF / NSFe / NSF2 music player with region-correct playback, multi-chip expansion audio, and a piano-roll visualizer with real pitch for every chip, plus a TAS studio with instant frame stepping, deterministic movies, and Vs. / FDS support.
 - A full suite of debugging tools, including a CPU/PPU debugger, memory and nametable viewers, pattern and palette inspectors, an execution heatmap, and an APU oscilloscope with per-channel mute.
+- An interface made of the console's materials: a black bezel for the picture, the NES-001's grey shell for the deck and settings, and its red for the controls and wordmark. The same layout on desktop and phone, with every tool one tap away.
 - Fully self-contained. All the code, fonts, and libraries are inlined, so the page makes no external requests.
 
 ## Running the Emulator
@@ -76,6 +77,49 @@ key.pem         TLS private key (you provide, see setup above).
 ```
 
 ## Changelog
+
+### v1.1.0
+
+**Accuracy**
+
+- **CPU/PPU clock alignment.** Real hardware powers up with its CPU divide-by-12 and PPU divide-by-4 dividers in one of four relative phases, and the NES-001 draws a new one on Reset. The emulator now does both, weighted by blargg's measured power-on and reset likelihoods, and the phase travels with save states, TAS movies and netplay. A sub-cycle access model makes every phase valid: bus reads and writes land at clock 4 of the 12-clock cycle, the NMI input is sampled at clock 8, and the `$2002` sprite flags and the `$2004` OAM bus are sampled at the fall of M2. Phase 0 is byte-for-byte the previous model. All 144 AccuracyCoin tests pass on all four phases, and one phase reproduces two documented alignment variants of the real console (the alternate `$2002` flag-clear key and the `$00` flag-set byte). A fixed phase can be pinned in Settings for repeatable test runs.
+- **Exact 2A03 DAC mixer.** The pulse and triangle/noise/DMC mixers use the measured non-linear curves (`95.88 / (8128 / n + 100)` and the three-input `159.79 / ...` surface as a 16x16x128 table) in place of the earlier linear approximations.
+- **MMC3 IRQs in 8x16 sprite games.** Empty sprite slots now fetch through the same address path as live sprites, so the dummy tile `$FF` selects the `$1000` pattern table in 8x16 mode and clocks A12 every scanline. Games with `$2000.3` clear previously got no scanline IRQs at all; they now get the hardware's 11 to 12 per frame.
+- **`$2007` during rendering** is gated on visible and pre-render lines only, which fixes reads on the Dendy's 51 post-render lines.
+- **PPUSTATUS overflow bit** is part of the deterministic power-on seed record. TAS movies carry a sixth seed field, and older movies load with the default.
+
+**Timing and audio**
+
+- **Phase-locked frame pacing** replaces the 1.0.2 vsync lock. The lock ran exactly one frame per display callback once the callback rate looked like 60 Hz, so every missed callback on a phone drained 16 ms of audio that a 0.5% rate controller could never refill, and a display drifting around 59 Hz alternated between skipping music and bursting frames. The new pacer tracks the wall-clock phase error with a one-frame deadband: jitter does nothing, a missed callback is repaid with one extra frame immediately, bunched callbacks skip one, and stalls are forgiven. 60 Hz-class panels stay display-paced with the 60 / 60.0988 drift absorbed by the audio resampler; 90, 120 and 144 Hz panels and throttled phones pace to real time. Zero underruns on every replayed callback pattern that broke the previous build. The same pacer drives TAS playback and the NSF player.
+- **Adaptive audio latency** on phones (96 ms, shrinking to 64 ms and growing again after an underrun), Safari's interrupted-state resume, and resume on tab return.
+- The on-screen controls no longer read layout in `touchmove`. Geometry is cached per gesture and visual state is coalesced per frame.
+
+**Interface**
+
+- **Redesigned throughout**, with nothing moved out of reach. The toolbar keeps all eight actions, labelled on desktop. The status bar becomes a console strip of chips, with disk, tape, barcode and netplay controls appearing as rows when a game needs them. The on-screen controls become a deck: the console's grey shell with its red stripe, the I/II selector in the Famicom's serif numerals, rewind, fast-forward and Turbo, over a controller face with a bevelled cross, grey pills and red domed A and B. One typeface (Archivo, embedded), one accent, and no pixel fonts outside the picture and the NSF readout.
+- **Press feedback rule.** Keys dip on press; colour is reserved for state (Turbo, TAS toggles, the LED). In TAS Studio every input is a lamp, dark when the frame's input is off and red when it is on, including A, B, the D-pad, Select, Start, disk eject and side, and the Vs. start and coin keys.
+- **Settings** on one page, no sub-menus: a grouped index that jumps and follows your scrolling, and a search box that filters rows without disturbing the rows the emulator hides itself. Composite-only controls stay hidden under Clean.
+- **A breathing focus ring** for keyboard and gamepad navigation, toasts as shell pills, and the debugger, TAS Studio and NSF panels restyled in place.
+- The previous look was retired, and the Interface setting is gone.
+
+**Mobile**
+
+- The picture is centred in the space above the deck and never covered by it. It is placed before its first frame, so loading a game no longer slides it, and it re-centres smoothly when a gamepad hides the controls.
+- Landscape keeps compact chrome (icons only, no title) and floats the controls over the picture's sides, giving the picture the full height. Integer scaling below 2x snaps to quarter steps, so a landscape phone runs at 1.5x instead of dropping to 0.5x.
+- The Power Pad, Family BASIC and Subor keyboard overlays scale to the height the phone actually has, and the strip's chips grow to 28 px keys. The strip's real height drives the layout, so nothing is ever clipped behind it.
+- The Famicom microphone indicator is a deck key that glows while the mic is live.
+
+**NSF player**
+
+- **Keyboard-style piano roll.** Five equal lanes with piano-key banding, a sliding pitch marker on the gutter that names a note once it has been held, note names inside bars that are wide enough, bars weighted by volume and fading with age, a 2.5 / 5 / 10 s window, and a Roll / Scope / Both view. Per-lane readouts show the slow facts (duty, arpeggio chord, period and mode, DMC level) with a volume meter, hold their text for at least 300 ms and never blank on a rest, so fast music no longer strobes the text.
+
+**Data Recorder**
+
+- The tape deck's management actions are words (Save, Load, Export, Import, Erase) rather than icons, and the readout speaks like a deck: "Blank tape, press the record key", "Recording 0:12", "Playing 0:05 / 0:42", "mytape.wav 0:42".
+
+**Tooling**
+
+- Browser-level regression harness (headless Chromium): the full AccuracyCoin suite per clock phase, alignment-variant measurement, a pacing replay of recorded phone callback patterns with an emulation-invariant hash, an MMC3 A12 matrix, touch path, settings rail, and phone layout checks (overlap, load stability, overlay fit, strip wrapping). Everything above was verified with it before shipping.
 
 ### v1.0.2
 
