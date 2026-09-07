@@ -41464,10 +41464,12 @@ function settingsRailBuild() {
   // within 40 px of the scroll position; at the very bottom, the last section).
   const railFollow = () => {
     if (settingsRailBuild._lock !== null) return;
+    if (!body.clientHeight) { railSetOn(0); return; }          // not laid out yet (sheet still hidden): first section
     const bodyTop = body.getBoundingClientRect().top;
     let idx = 0;
     sections.forEach((sec, i) => { if (sec.getBoundingClientRect().top - bodyTop <= 40) idx = i; });
-    if (body.scrollTop + body.clientHeight >= body.scrollHeight - 2) idx = sections.length - 1;
+    // at the very bottom the last section is current — only meaningful when the sheet actually scrolls
+    if (body.scrollHeight > body.clientHeight + 2 && body.scrollTop + body.clientHeight >= body.scrollHeight - 2) idx = sections.length - 1;
     railSetOn(idx);
   };
   const unlock = () => { settingsRailBuild._lock = null; };
@@ -41478,6 +41480,7 @@ function settingsRailBuild() {
   body.addEventListener('keydown', unlock); body.addEventListener('pointerdown', e => { if (e.target.closest('.settings-rail')) return; unlock(); });
   settingsRailBuild._detach = () => { body.removeEventListener('scroll', onScroll); body.removeEventListener('wheel', unlock); body.removeEventListener('touchstart', unlock); body.removeEventListener('keydown', unlock); };
   settingsRailBuild._lock = null; railFollow();
+  requestAnimationFrame(railFollow);   // again once the sheet has dimensions
 }
 function settingsSearchApply(q) {
   // The app hides rows and sections of its own (composite-only rows, per-cartridge sections) with
