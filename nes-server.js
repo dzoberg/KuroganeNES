@@ -1,20 +1,32 @@
 // nes-server.js — WebSocket relay server for KuroganeNES multiplayer
 //
-// SETUP (Let's Encrypt — recommended):
-//   Pick your public domain(s), then request a cert (DuckDNS example shown):
-//   sudo certbot certonly --authenticator dns-duckdns \
-//     --dns-duckdns-token YOUR_TOKEN --dns-duckdns-propagation-seconds 120 \
-//     -d "your-domain.example.org"
-//   LE_DOMAIN=your-domain.example.org node nes-server.js
-//   (or set LE_CERT / LE_KEY env vars to point directly at your fullchain/privkey)
+// Run:   node nes-server.js            (no npm install; Node.js stdlib only)
+// Port:  8888 by default; PORT=9000 node nes-server.js to change it. One port serves HTTPS and WSS.
 //
-// SETUP (self-signed — localhost only):
-//   openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=localhost"
-//   node nes-server.js
+// Certificates (acme-manager.js), in order of preference:
+//   1. cert.pem and key.pem next to this file (any CA; see the README for a certbot recipe)
+//   2. a certbot live directory: CERTBOT_LIVE_DIR=/etc/letsencrypt/live/<your-domain>
+//   3. a self-signed pair the manager generates with openssl on first start (browsers show a warning once)
+// Renewed files are picked up without a restart. The server never refuses to start over certificates.
 //
-// Zero npm dependencies. WebSocket protocol (RFC 6455) implemented from scratch
-// using only Node.js stdlib: https, crypto, fs, path, os.
+// Settings go in a .env file next to this file (read by the server itself, no dotenv package; keep it chmod 600)
+// or in the environment, which wins: PORT, CERTBOT_LIVE_DIR, ALLOWED_ORIGINS=https://a,https://b (empty = any).
 //
+// Run at boot with systemd: /etc/systemd/system/nes.service
+//   [Unit]
+//   Description=KuroganeNES relay
+//   After=network-online.target
+//   Wants=network-online.target
+//   [Service]
+//   WorkingDirectory=/opt/kuroganenes
+//   ExecStart=/usr/bin/node nes-server.js
+//   Restart=always
+//   RestartSec=5
+//   [Install]
+//   WantedBy=multi-user.target
+//   then: sudo systemctl enable --now nes   (no EnvironmentFile= line needed: the server loads its own .env)
+//
+// The WebSocket protocol (RFC 6455) is implemented here from the stdlib: https, crypto, fs, path, os.
 // Single port (default 8888) serves HTTPS + WSS.
 // Binary relay between host and guests. 2P or 4P (Four Score).
 
@@ -23,38 +35,56 @@ const crypto = require('crypto');
 const fs     = require('fs');
 const os     = require('os');
 const path   = require('path');
+// ── .env loader ──
+// S12-001: zero-dependency dotenv so the launch command never carries secrets.
+// Reads KEY=VALUE lines from .env in this script's own directory (not the cwd,
+// so systemd/cron can't pick up a stray file). Real environment variables win
+// over the file. Supports blank lines, # comments, optional `export ` prefixes,
+// and quoted values. A missing .env is fine. The file is never reachable over
+// HTTP — handleRequest() only answers '/' and '/multiplayer' — but it holds the
+// secrets such as an API token, so we warn if its permissions allow other local users to read it.
+(function loadDotEnv() {
+  const file = path.join(__dirname, '.env');
+  let raw;
+  try { raw = fs.readFileSync(file, 'utf8'); } catch { return; } // no .env — fine
+  try {
+    const mode = fs.statSync(file).mode & 0o777;
+    if (mode & 0o077) {
+      console.warn(`[env] .env is readable by other users (mode ${mode.toString(8)}) — fix with: chmod 600 ${file}`);
+    }
+  } catch {}
+  for (let line of raw.replace(/^\uFEFF/, '').split(/\r?\n/)) {
+    line = line.trim();
+    if (!line || line.startsWith('#')) continue;
+    if (line.startsWith('export ')) line = line.slice(7).trim();
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    let val = line.slice(eq + 1).trim();
+    if (val.length > 1 && ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'")))) {
+      val = val.slice(1, -1);
+    }
+    if (!(key in process.env)) process.env[key] = val; // real env always wins
+  }
+})();
+
 const PORT   = process.env.PORT || 8888;
 const FILE   = path.join(__dirname, 'nes.html');
 
-// ── SSL setup ──
-// Prefer Let's Encrypt certs (fully trusted, required for navigator.audioSession
-// on Android). Falls back to local cert.pem/key.pem for localhost development.
-// Domain is taken from the LE_DOMAIN env var (e.g. LE_DOMAIN=your-domain.example.org),
-// or override the full paths directly with LE_CERT / LE_KEY. Falls back to a local
-// self-signed cert.pem/key.pem for localhost development.
-const LE_DOMAIN = process.env.LE_DOMAIN || 'localhost';
-const LE_CERT = process.env.LE_CERT || `/etc/letsencrypt/live/${LE_DOMAIN}/fullchain.pem`;
-const LE_KEY  = process.env.LE_KEY  || `/etc/letsencrypt/live/${LE_DOMAIN}/privkey.pem`;
-const LOCAL_CERT = path.join(__dirname, 'cert.pem');
-const LOCAL_KEY  = path.join(__dirname, 'key.pem');
+// ── Certificates (acme-manager.js): a local cert.pem/key.pem pair, a certbot live directory, or a self-signed
+// pair generated on first start; renewals hot-swapped. A CA-issued certificate is what a phone outside the home
+// needs (no warning page; Android's audio session requires a secure context). ──
+const { CertManager } = require('./acme-manager');
 
-let ssl;
-if (fs.existsSync(LE_CERT) && fs.existsSync(LE_KEY)) {
-  ssl = {
-    key:  fs.readFileSync(LE_KEY),
-    cert: fs.readFileSync(LE_CERT),
-  };
-} else if (fs.existsSync(LOCAL_CERT) && fs.existsSync(LOCAL_KEY)) {
-  ssl = {
-    key:  fs.readFileSync(LOCAL_KEY),
-    cert: fs.readFileSync(LOCAL_CERT),
-  };
-} else {
-  console.error('\n[ERROR] No SSL certificate found.');
-  console.error('        Let\'s Encrypt: run certbot (see setup comment above)');
-  console.error('        Self-signed:   openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=localhost"\n');
-  process.exit(1);
-}
+const certs = new CertManager({
+  dir: path.join(__dirname, 'certs'),
+  defaultDomains: [],   // nothing is baked in; the manager reads what it needs from the environment
+  legacyPaths: {
+    certbotDir: process.env.CERTBOT_LIVE_DIR || null,   // e.g. /etc/letsencrypt/live/<your-domain>
+    localCert:  path.join(__dirname, 'cert.pem'),
+    localKey:   path.join(__dirname, 'key.pem'),
+  },
+});
 
 // ══════════════════════════════════════════════════════════════
 // RFC 6455 WebSocket — frame encode/decode (no npm dependencies)
@@ -278,6 +308,7 @@ class WsClient {
 
   _onBinary(data) {
     if (!this.identified || !this.room) return;
+    if (this.slot >= 0 && data.length >= 3 && data[0] === 0x10) data[2] = this.slot;   // MP_INPUT: the slot is the relay's assignment, not the sender's claim
     // Relay binary game data to the other side(s)
     relayToRoom(this, wsEncode(WS_OP_BINARY, data));
   }
@@ -524,7 +555,7 @@ function json(res, status, obj) {
   res.end(JSON.stringify(obj));
 }
 
-const server = https.createServer(ssl, (req, res) => {
+function handleRequest(req, res) {
   // Simple REST endpoint for multiplayer availability check
   if (req.method === 'GET' && req.url === '/multiplayer') {
     return json(res, 200, { available: true });
@@ -561,10 +592,10 @@ const server = https.createServer(ssl, (req, res) => {
 
   res.writeHead(404);
   res.end('Not found');
-});
+}
 
 // ── WebSocket upgrade handler ──
-server.on('upgrade', (req, socket, head) => {
+function handleUpgrade(req, socket, head) {
   // Only accept upgrades on /ws path
   if (req.url !== '/ws') {
     socket.destroy();
@@ -595,37 +626,73 @@ server.on('upgrade', (req, socket, head) => {
   const ip = socket.remoteAddress || 'unknown';
   if (!ipConnAllow(ip)) { socket.destroy(); return; }
 
-  const acceptKey = wsAcceptKey(wsKey);
-  const responseHeaders = [
-    'HTTP/1.1 101 Switching Protocols',
-    'Upgrade: websocket',
-    'Connection: Upgrade',
-    `Sec-WebSocket-Accept: ${acceptKey}`,
-    '', '' // double CRLF to end headers
-  ].join('\r\n');
+  // S13-001: the per-IP count is now held. Everything from here must either hand it to a WsClient
+  // (whose close/error handlers release it exactly once) or release it on failure — otherwise a socket
+  // that dies between accept and handler-wiring would leak a slot from the concurrency budget.
+  let client = null;
+  try {
+    const acceptKey = wsAcceptKey(wsKey);
+    const responseHeaders = [
+      'HTTP/1.1 101 Switching Protocols',
+      'Upgrade: websocket',
+      'Connection: Upgrade',
+      `Sec-WebSocket-Accept: ${acceptKey}`,
+      '', '' // double CRLF to end headers
+    ].join('\r\n');
 
-  socket.write(responseHeaders);
+    socket.write(responseHeaders);
 
-  // Wrap in WsClient — all further communication is WebSocket frames
-  const client = new WsClient(socket);
+    // Wrap in WsClient — all further communication is WebSocket frames. From this point the client's
+    // 'close'/'error' handlers own the count release (via _onClose → ipConnRelease).
+    client = new WsClient(socket);
 
-  // Process any data that arrived with the upgrade request (rare but possible)
-  if (head && head.length > 0) {
-    client.buf = Buffer.concat([client.buf, head]);
-    client._processFrames();
+    // Process any data that arrived with the upgrade request (rare but possible)
+    if (head && head.length > 0) {
+      client.buf = Buffer.concat([client.buf, head]);
+      client._processFrames();
+    }
+  } catch (e) {
+    // Construction/handshake failed before the WsClient took ownership → release the count here, exactly
+    // once. If a WsClient was partially created, honor its `released` flag so we never double-release
+    // (its 'error'/'close' handler may already have run and released). If not, release directly.
+    if (client) {
+      if (!client.released) { client.released = true; ipConnRelease(ip); }
+    } else {
+      ipConnRelease(ip);
+    }
+    try { socket.destroy(); } catch {}
   }
-});
+}
 
 // ── Start ──
-server.listen(PORT, '0.0.0.0', () => {
-  const nets = os.networkInterfaces();
-  console.log('\n ╔══════════════════════════════════════╗');
-  console.log(' ║        KuroganeNES  ·  v1.0          ║');
-  console.log(' ╚══════════════════════════════════════╝\n');
-  console.log(`   Local:   https://localhost:${PORT}`);
-  for (const n of Object.keys(nets))
-    for (const i of nets[n])
-      if (i.family === 'IPv4' && !i.internal)
-        console.log(`   Network: https://${i.address}:${PORT}`);
-  console.log(`\n   Multiplayer: 2P / 4P · WebSocket relay\n`);
+// Certificates resolve before listen() so the very first handshake already has
+// the best available context; after that the manager renews and hot-swaps in
+// the background (server.setSecureContext) without a restart.
+async function main() {
+  const ssl = await certs.init();
+
+  const server = https.createServer(ssl, handleRequest);
+  server.on('upgrade', handleUpgrade);
+  certs.attach(server);
+
+  server.listen(PORT, '0.0.0.0', () => {
+    const nets = os.networkInterfaces();
+    console.log('\n ╔══════════════════════════════════════╗');
+    console.log(' ║        KuroganeNES  ·  v2.0          ║');
+    console.log(' ╚══════════════════════════════════════╝\n');
+    console.log(`   Local:   https://localhost:${PORT}`);
+    for (const n of Object.keys(nets))
+      for (const i of nets[n])
+        if (i.family === 'IPv4' && !i.internal)
+          console.log(`   Network: https://${i.address}:${PORT}`);
+    for (const d of certs.config.domains)
+      console.log(`   Public:  https://${d}:${PORT}`);
+    console.log(`\n   Cert:    ${certs.status()}`);
+    console.log(`   Multiplayer: 2P / 4P · WebSocket relay\n`);
+  });
+}
+
+main().catch((e) => {
+  console.error('\n[FATAL] could not start:', e.message, '\n');
+  process.exit(1);
 });

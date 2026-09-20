@@ -70,13 +70,61 @@ To keep it running in the background, use pm2 (`pm2 start nes-server.js --name k
 ## Files
 
 ```
-nes.html        The emulator. Open it in any browser.
-nes-server.js   WebSocket relay for online multiplayer (Node.js, no npm).
-cert.pem        TLS certificate (you provide, see setup above).
-key.pem         TLS private key (you provide, see setup above).
+nes.html          The emulator. Open it in any browser.
+nes-server.js     WebSocket relay for online multiplayer (Node.js, no npm).
+acme-manager.js   The relay's certificate manager (cert.pem/key.pem, a certbot directory, or a self-signed pair).
+cert.pem          TLS certificate (you provide, see setup above; optional).
+key.pem           TLS private key (you provide, see setup above; optional).
 ```
 
 ## Changelog
+
+### v2.0
+
+A new baseline. Save states, TAS movies and netplay sessions from 1.x are not compatible. The state format, the movie format and the netplay protocol were all rebuilt around one idea: everything the console does is decided by a 40-byte input record and a power-on seed record, and every save, movie and netplay session carries exactly those. Emulation output was verified byte-identical at every step against the pinned AccuracyCoin, blargg, nestest and golden-corpus results.
+
+**Accuracy**
+
+- **MMC3 scanline counter.** The PPU's dot-0 pattern address, built from the previous line's dummy nametable fetch, exists after every fetch line including scanline 0, but not on the pre-render line, so A12 stays high across the boundary and the MMC3's filter sees no second clock. blargg's `mmc3_test` 4 (scanline timing) now reads the hardware's first clock at (261, 5) and one per line at dot 325.
+- **Sprites on scanline 0.** On the pre-render line each secondary-OAM entry is compared against the line the PPU thinks it is on (261 & $FF = 5), so stale secondary OAM loads into the sprite units for scanline 0 exactly as on the RP2C02G. After the skipped dot, the composite 2C02's sprite shifters start the line not counting, so Pac-Man's top-right dot alternates to the top-left as it does on a real console.
+- **PPU open bus and OAM decay.** The PPU's I/O latch decays bit by bit over the documented 3 to 30 ms band from a serialized seed. OAM is 32 rows of DRAM that decay to zero unless an access refreshes them, with the 2C07's forced refresh on scanlines 265 to 310 and the Dendy's longer gap modelled. Games that read `$2002`'s open bits or skip OAM DMA behave as on hardware, and identically on every replay.
+- **Power-on and Reset as the hardware does them.** RAM powers up in the documented 6116-class shapes rather than random bytes, and the palette is the reference NES-001's. A quick power cycle (within about 20 seconds, with Power-On State on Auto) brings the PPU up as if reset, as NESdev documents. The console profile (NES-001, Famicom or NES-101) decides whether Reset reaches the PPU and whether the PPU starts a frame before the CPU. All of it lives in the seed record, so a movie boots the same way on another machine.
+- **APU.** The frame-counter IRQ flag is raised for two cycles even with interrupts inhibited, matching AccuracyCoin on the RP2A03G. The DMC's implicit-abort phantom DMA is modelled, as are the controller's merged reads under DMA (`$4016` clocked once for two back-to-back reads on an NES and on every read on a Famicom). The triangle's ultrasonic output is the mixed average. The EPSM core was reference-checked against Mesen2's YMF288 and its SSG clock ratio corrected.
+- **Vs. System and PAL.** The 2C03, 2C04 and 2C05 RGB palettes come from the PPU's ROM dumps, with the 2C05 `$2002` signatures and the letterless 2A03's noise period. PAL OAM refresh and the Dendy's differences are modelled, and a Vs. golden corpus with per-game DIP switches is part of verification. Vs. coin and service switches, the Karaoke Studio microphone level and every keyboard, tablet and pad are in the input record.
+- **The Game Genie sits on the bus** between cartridge and console. Substitution applies to CPU fetches, DMC sample fetches and OAM DMA from ROM alike, and the patched value drives the console's data bus.
+- **Every board on a contract.** All 561 mappers declare their hooks and register files, and boards that map memory directly use a page table instead of per-access bank arithmetic. A board-fingerprint gate proves each board's behaviour unchanged across the whole rewrite.
+- **Rewind rebuilt.** The pictures shown while rewinding are now the frames the game actually drew, since a chunk's pictures are rebuilt from the previous chunk's state and its own input records, and releasing the key resumes at exactly the frame on screen. A gate proves both, on a static menu and on a moving picture.
+
+**Determinism, saves and netplay**
+
+- **The input record.** One 40-byte record per frame carries every device the console can read: pads, the Four Score, Zapper aim and trigger, the Power Pad, the Family BASIC and Subor keyboards, the Oeka Kids tablet, the Famicom and Karaoke microphones, the Data Recorder, the Barcode Battler, and the Vs. coin and service switches. The console reads nothing else. Movies and netplay carry the record itself, so any peripheral replays and stays in sync.
+- **State format v2 (KNS2).** A versioned container with a section table, register files only, self-sizing, and refusing to load across builds. The JSON serializers (73 KB) are gone. Every save-state slot is about 5 KB lighter and TAS greenzones are megabytes lighter.
+- **`.tas` v2** carries the full record per frame, the seed record, and a Reset event that a gate proves equal to a live Reset.
+- **Netplay protocol 3** puts the host's record on the wire, with a sync CRC over the whole snapshot, relay-assigned slots, and a build-id handshake.
+- **Closing a ROM** clears its cheats, its battery-RAM section and its save slots from Settings.
+
+**Performance**
+
+- Boards were V8 dictionary-mode objects. Lifting their accessor pairs made every board fast-properties, worth 25% of frame time on MMC1 and MMC3, and sprite pixel output now walks a bit mask of live units, worth another 8 to 12%. Together, BladeBuster went from 12.4 to 8.6 ms per frame and MMC1 from 13.1 to 8.3 ms in the reference harness.
+- **PPU scheduling** (Settings, Emulation) offers Lockstep, the reference, with the PPU advanced every CPU cycle, or Blocks, with the PPU advanced in blocks where the hardware cannot tell the difference, which is 11 to 16% faster on boards without a PPU-driven IRQ. Both give the same picture, sound and state, and a differential gate holds them to it frame for frame.
+
+**The console in a Worker**
+
+- **Settings, System, Console thread.** With Worker selected, the console runs off the page's thread from the same code: the page's own console script block becomes the Worker, and the input record, the picture and the sound travel through shared memory, one frame per request and no message per frame. Rewind, save states and cheats run on it. The TAS studio, netplay and the debugger take the console back to the main thread while they are open and hand it back when they close, byte-exactly in both directions. **Worker display** chooses between showing a frame at the next animation frame with no waiting, or in the same one after a short wait, and the FPS line reports the hit rate so the choice can be judged on the device in hand. Main-thread play is unchanged and remains the default.
+- The bundle runs under a Content-Security-Policy: no inline handlers, no `eval`, and every script block hashed.
+
+**Interface and mobile**
+
+- Settings on phones use one typographic scale, selects that never overflow their row, concise descriptions, and a search field in the header with a magnifying glass, as on desktop. The focus ring is a single still ring for keyboard and gamepad navigation, replacing the breathing one, and taps flash nothing.
+- With Android's display size enlarged, the on-screen pad scales to the viewport so the A and B cluster fits, and a status message wider than its chip scrolls instead of being cut off.
+- Power-On State, Console profile, CPU/PPU alignment, MMC3 IRQ revision, Vs. player-1 stick, PPU scheduling, Console thread and Worker display are all Settings, each explained where it sits.
+- The debugger names every board's registers and shows mapper-table warnings. Every panel is a pure observer: a gate runs 240 frames with all sixteen open and compares the state to a plain run.
+
+**Tooling and verification**
+
+- A build with a manifest and a pinned SHA-256, and a precommit suite of twenty-nine gates: boot, the headless console, the Worker boot, shared-memory, audio, switch-over, sessions, rewind and hand-over differentials, the debugger observer, rewind determinism, state completeness and round-trips, fuzz round-trips for every board, input determinism, the `.tas` format, netplay records, device round-trips, load fingerprints, CSP, and the coupling, thread-side, comment-share and provenance ratchets. Acceptance runs on the ROM corpus cover nestest, AccuracyCoin on all four alignments, blargg, a golden corpus at four alignments, and the lockstep differential in fresh processes.
+- `docs/PROVENANCE.md` lists every hardware constant in the console with its stated source (123 constants: 107 sourced, 16 provisional), and `docs/TIER-B-BENCH-KIT.md` describes what a real console would settle, with the ROM to run, the procedure, and the line each number goes to.
+- Comments were rewritten to keep the hardware reasoning and drop the narration, with a gate proving the code identical, and the code weight and coupling of every layer are ratcheted so neither can grow unnoticed.
 
 ### v1.1.0
 
